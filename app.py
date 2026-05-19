@@ -11,27 +11,102 @@ from ai_generator import generate_investment_report
 # ---------------------------------------------------------
 # 1. 페이지 설정 및 스타일
 # ---------------------------------------------------------
-st.set_page_config(page_title="AI 투자 위원회", layout="centered")
+st.set_page_config(page_title="AI 투자 위원회", layout="wide")
 st.markdown("""
     <style>
+    /* ── 숨김 ── */
     #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    h1 { font-size: 24px !important; font-weight: 700 !important; margin-bottom: 10px !important; }
-    h2 { font-size: 20px !important; font-weight: 700 !important; margin-top: 20px !important; }
+    footer    {visibility: hidden;}
+
+    /* ── CSS 변수 — 라이트/다크 자동 대응 ── */
+    :root {
+        --text-main: #1E1E1E;
+        --border:    rgba(49,51,63,.12);
+        --bg-card:   #FFFFFF;
+    }
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --text-main: #FAFAFA;
+            --border:    rgba(250,250,250,.12);
+            --bg-card:   #1E2130;
+        }
+        strong { color: var(--text-main) !important; }
+    }
+
+    /* ── 공통 타이포그래피 ── */
+    h1 { font-size: 24px !important; font-weight: 700 !important; margin-bottom: 8px !important; }
+    h2 { font-size: 20px !important; font-weight: 700 !important; margin-top: 16px !important; }
     h3 { font-size: 17px !important; font-weight: 700 !important; }
+    strong { font-weight: 600 !important; color: var(--text-main); }
     .stMarkdown p, .stMarkdown li {
         font-size: 15px !important;
-        line-height: 1.7 !important;
+        line-height: 1.75 !important;
         letter-spacing: -0.01em !important;
     }
-    strong { font-weight: 600 !important; color: #1E1E1E; }
-    /* 모바일 최적화 */
-    @media (max-width: 640px) {
-        .main .block-container { padding: 0.8rem 0.6rem !important; max-width: 100% !important; }
-        div[role="radiogroup"] { flex-direction: column !important; gap: 6px !important; }
-        div[role="radiogroup"] label { white-space: normal !important; line-height: 1.5 !important; }
+
+    /* ── 데스크탑 (768px 이상) ── */
+    @media (min-width: 768px) {
+        .main .block-container {
+            padding: 1.5rem 2.5rem !important;
+            max-width: 1440px !important;
+        }
+        .stFormSubmitButton > button { font-size: 16px !important; }
+    }
+
+    /* ── 모바일 (767px 이하) ── */
+    @media (max-width: 767px) {
+        /* 컨테이너 여백 최소화 */
+        .main .block-container {
+            padding: 0.75rem 0.5rem !important;
+            max-width: 100% !important;
+        }
+
+        /* ▼ 모든 st.columns → 세로 1열 ▼ */
+        [data-testid="stHorizontalBlock"] {
+            flex-wrap: wrap !important;
+        }
+        [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+            width: 100% !important;
+            flex: 1 1 100% !important;
+            min-width: 100% !important;
+        }
+
+        /* 타이포그래피 */
         h1 { font-size: 20px !important; }
-        .stButton > button { min-height: 2.5rem !important; }
+        .stMarkdown p, .stMarkdown li { font-size: 16px !important; }
+
+        /* 폼 입력 줌 방지 (iOS: 16px 미만이면 자동 줌) */
+        input, select, textarea,
+        .stTextInput input,
+        .stNumberInput input { font-size: 16px !important; }
+
+        /* 터치 영역 최소 48px */
+        .stButton > button {
+            min-height: 48px !important;
+            font-size: 16px !important;
+        }
+        .stFormSubmitButton > button {
+            min-height: 52px !important;
+            font-size: 17px !important;
+        }
+
+        /* 라디오 버튼 세로 배치 */
+        div[role="radiogroup"] { flex-direction: column !important; gap: 8px !important; }
+        div[role="radiogroup"] label {
+            white-space: normal !important;
+            line-height: 1.5 !important;
+            font-size: 16px !important;
+            padding: 4px 0 !important;
+        }
+
+        /* 입력 필드 간격 */
+        .stNumberInput, .stSlider, .stSelectbox { margin-bottom: 0.5rem !important; }
+
+        /* Plotly 캔들 차트 높이를 300px으로 축소 (Streamlit 1.31+ 렌더러) */
+        .price-chart [data-testid="stPlotlyChart"] > div:first-child {
+            height: 300px !important;
+            min-height: 300px !important;
+        }
     }
     </style>
 """, unsafe_allow_html=True)
@@ -94,17 +169,16 @@ with st.sidebar:
         st.markdown(f"📈 A (Chartist) 승: **{stats['A']}회** ({a_pct:.0f}%)")
         st.markdown(f"🐢 B (Believer) 승: **{stats['B']}회** ({b_pct:.0f}%)")
         st.markdown(f"🤝 무승부: **{stats['무승부']}회** ({d_pct:.0f}%)")
-        if total > 0:
-            st.progress(stats['A'] / total, text=f"A 누적 승률 {a_pct:.0f}%")
+        st.progress(stats['A'] / total, text=f"A 누적 승률 {a_pct:.0f}%")
 
 # ---------------------------------------------------------
-# 4. 메인 화면
+# 4. 헤더 + 즐겨찾기 바
 # ---------------------------------------------------------
 st.title("🏛️ AI 투자 위원회 분석 시스템")
 st.markdown("객관적 지표와 행동 심리 분석을 통해 **오늘의 BUY / HOLD / SELL 전략**을 확인하세요.")
 st.divider()
 
-# 즐겨찾기 바 (폼 바로 위 — 클릭 한 번으로 티커 전환)
+# 즐겨찾기 바 — 데스크탑: 최대 6개 가로 배열 / 모바일: CSS로 세로 스택
 _favs_main = get_favorites()
 if _favs_main:
     st.caption("⭐ 즐겨찾기")
@@ -115,57 +189,58 @@ if _favs_main:
                 st.session_state['ticker_input'] = _fav
                 st.rerun()
 
+# ---------------------------------------------------------
+# 5. 분석 폼 — 데스크탑: 좌/우 2열 / 모바일: CSS로 세로 1열
+# ---------------------------------------------------------
 with st.form("analysis_form"):
     TARGET_TICKER = st.text_input(
         "▶️ 분석할 기업의 티커 (예: TSLA, AAPL)",
         key='ticker_input'
     )
 
-    st.markdown("### 💼 나의 포트폴리오 상태")
-    position = st.radio(
-        "현재 포지션이 어떻게 되시나요?",
-        ["✅ 이미 보유 중 (추매/매도 고민)", "👀 미보유 (신규 진입 대기)"],
-        horizontal=True
-    )
+    form_left, form_right = st.columns(2)
 
-    col1, col2 = st.columns(2)
-    with col1:
-        avg_price = st.number_input("내 평단가 ($) - 미보유시 0", min_value=0.0, value=0.0, step=10.0)
-    with col2:
-        weight = st.slider("포트폴리오 내 비중 (%)", 0, 100, 10)
+    with form_left:
+        st.markdown("### 💼 포트폴리오 상태")
+        position = st.radio(
+            "현재 포지션",
+            ["✅ 이미 보유 중 (추매/매도 고민)", "👀 미보유 (신규 진입 대기)"],
+            horizontal=False
+        )
+        avg_price = st.number_input("내 평단가 ($) — 미보유시 0", min_value=0.0, value=0.0, step=10.0)
+        weight    = st.slider("포트폴리오 내 비중 (%)", 0, 100, 10)
 
-    st.markdown("### 🎯 오늘 나의 매매 계획 (충동)")
-    action_plan = st.radio(
-        "솔직히 지금 당장 어떻게 하고 싶으신가요?",
-        ["🛒 당장 매수하고 싶다 (신규진입/추매)", "🛑 당장 매도하고 싶다 (익절/손절)", "🧘 그냥 가만히 있고 싶다 (관망/홀딩)"],
-        horizontal=True
-    )
-
-    st.markdown("### 🧠 현재 나의 심리 상태")
-    psycho_state = st.selectbox(
-        "가장 가까운 속마음을 골라주세요:",
-        [
-            "수익 중인데 언제 떨어질지 몰라 초조함 (익절 타이밍 고민)",
-            "손실 중이라 불안하고 본전이 오면 팔고 싶음 (손실 회피)",
-            "주가가 너무 올라서 지금 안 사면 벼락거지 될 것 같음 (FOMO)",
-            "크게 물려있지만 언젠가 오를 거라 믿고 어플 삭제함 (비자발적 장기투자)",
-            "원칙에 따라 기계적으로 분할 매수/매도 접근 중 (이성적 상태)",
-            "아직 별생각 없음 (단순 관망)"
-        ]
-    )
-
-    with st.expander("📊 [선택 사항] 오늘의 거시 시장 심리 지수 입력"):
-        st.info("매일 쓰지 않는다면 비워두셔도 됩니다. 수치를 입력하면 '전문가 C'가 군중 심리와 나의 심리를 비교하는 정밀 분석을 추가합니다.")
-        macro_col1, macro_col2 = st.columns(2)
-        with macro_col1:
-            vix_input = st.number_input("VIX 변동성 지수 (입력 시에만 분석)", min_value=0.0, value=0.0, step=1.0)
-        with macro_col2:
-            fg_input = st.number_input("CNN 공포탐욕지수 (0~100)", min_value=0, max_value=100, value=0, step=1)
+    with form_right:
+        st.markdown("### 🧠 심리 상태 / 매매 계획")
+        psycho_state = st.selectbox(
+            "현재 나의 속마음:",
+            [
+                "수익 중인데 언제 떨어질지 몰라 초조함 (익절 타이밍 고민)",
+                "손실 중이라 불안하고 본전이 오면 팔고 싶음 (손실 회피)",
+                "주가가 너무 올라서 지금 안 사면 벼락거지 될 것 같음 (FOMO)",
+                "크게 물려있지만 언젠가 오를 거라 믿고 어플 삭제함 (비자발적 장기투자)",
+                "원칙에 따라 기계적으로 분할 매수/매도 접근 중 (이성적 상태)",
+                "아직 별생각 없음 (단순 관망)"
+            ]
+        )
+        st.markdown("### 🎯 오늘 나의 매매 계획")
+        action_plan = st.radio(
+            "솔직히 지금 당장 어떻게 하고 싶으신가요?",
+            ["🛒 당장 매수하고 싶다 (신규진입/추매)", "🛑 당장 매도하고 싶다 (익절/손절)", "🧘 그냥 가만히 있고 싶다 (관망/홀딩)"],
+            horizontal=False
+        )
+        with st.expander("📊 [선택] 거시 시장 심리 지수 직접 입력"):
+            st.info("수치를 입력하면 '전문가 C'가 군중 심리와 비교 분석을 추가합니다.")
+            mx1, mx2 = st.columns(2)
+            with mx1:
+                vix_input = st.number_input("VIX 변동성 지수", min_value=0.0, value=0.0, step=1.0)
+            with mx2:
+                fg_input = st.number_input("CNN 공포탐욕지수 (0~100)", min_value=0, max_value=100, value=0, step=1)
 
     submitted = st.form_submit_button("🚀 나의 매매 계획 진단받기", use_container_width=True)
 
 # ---------------------------------------------------------
-# 5. 제출 후 실행 로직
+# 6. 제출 후 실행 로직
 # ---------------------------------------------------------
 if submitted:
     TARGET_TICKER = TARGET_TICKER.strip().upper() if TARGET_TICKER else "TSLA"
@@ -204,21 +279,18 @@ if submitted:
         else:
             st.warning(f"⚠️ 노션 백업 건너뜀 (사유: {notion_msg})")
 
-        # 즐겨찾기 추가
         current_favs = get_favorites()
         if TARGET_TICKER not in current_favs:
             if st.button(f"⭐ {TARGET_TICKER} 즐겨찾기에 추가", use_container_width=False):
                 save_favorite(TARGET_TICKER)
                 st.rerun()
 
-        # ── 빠른 진단 시각화 ──────────────────────────────────
+        # ── 빠른 진단 — 게이지 + R/R 메트릭 (항상 전체 너비) ──────────
         st.markdown("### 📊 빠른 진단")
 
-        # 진입 점수 + RSI 게이지 (나란히)
         entry_color = "#2ECC71" if investment_data['entry_grade'] == "GREEN" \
                  else "#E74C3C" if investment_data['entry_grade'] == "RED" \
                  else "#F39C12"
-
         rsi_num   = float(investment_data['rsi'].split('(')[0].strip())
         rsi_color = "#E74C3C" if rsi_num >= 70 else "#2ECC71" if rsi_num <= 30 else "#3498DB"
 
@@ -263,13 +335,12 @@ if submitted:
                                   paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig_gauges, use_container_width=True)
 
-        # 손익비 (R/R) 메트릭
-        cur   = investment_data['current_price']
-        risk  = cur - investment_data['stop_loss']
-        rwd1  = investment_data['target1'] - cur
-        rwd2  = investment_data['target2'] - cur
-        rr1   = rwd1 / risk if risk > 0 else 0
-        rr2   = rwd2 / risk if risk > 0 else 0
+        cur  = investment_data['current_price']
+        risk = cur - investment_data['stop_loss']
+        rwd1 = investment_data['target1'] - cur
+        rwd2 = investment_data['target2'] - cur
+        rr1  = rwd1 / risk if risk > 0 else 0
+        rr2  = rwd2 / risk if risk > 0 else 0
 
         mc1, mc2, mc3 = st.columns(3)
         mc1.metric("🛡️ 손절가 (ATR×1.5)",
@@ -277,15 +348,14 @@ if submitted:
                    f"-{risk/cur*100:.1f}%", delta_color="inverse")
         mc2.metric("🎯 1차 익절 (ATR×2.0)",
                    f"${investment_data['target1']:.2f}",
-                   f"+{rwd1/cur*100:.1f}%  ·  손익비 1:{rr1:.1f}")
+                   f"+{rwd1/cur*100:.1f}%  ·  1:{rr1:.1f}")
         mc3.metric("🚀 2차 익절 (ATR×3.5)",
                    f"${investment_data['target2']:.2f}",
-                   f"+{rwd2/cur*100:.1f}%  ·  손익비 1:{rr2:.1f}")
-
+                   f"+{rwd2/cur*100:.1f}%  ·  1:{rr2:.1f}")
         rr_label = "✅ 진입 승인 (R/R ≥ 1:2)" if rr1 >= 2 else "⛔ 진입 보류 (R/R < 1:2)"
         st.caption(f"1차 손익비 기준: {rr_label}")
 
-        # OI 히트맵 (옵션 미결제약정 분포)
+        # OI 히트맵 — 전체 너비
         oi_data = investment_data.get('oi_heatmap')
         if oi_data and oi_data.get('strikes'):
             st.markdown("##### 📊 옵션 OI 분포 (현재가 ±25%)")
@@ -294,13 +364,11 @@ if submitted:
                                     name='Call OI', marker_color='rgba(46,204,113,0.7)'))
             fig_oi.add_trace(go.Bar(x=oi_data['strikes'], y=oi_data['puts'],
                                     name='Put OI', marker_color='rgba(231,76,60,0.7)'))
-            fig_oi.add_vline(x=investment_data['current_price'], line_dash="dash",
-                             line_color="#3498DB",
-                             annotation_text=f"현재가 ${investment_data['current_price']:.2f}",
+            fig_oi.add_vline(x=cur, line_dash="dash", line_color="#3498DB",
+                             annotation_text=f"현재가 ${cur:.2f}",
                              annotation_position="top left")
             if oi_data.get('max_pain'):
-                fig_oi.add_vline(x=oi_data['max_pain'], line_dash="dot",
-                                 line_color="orange",
+                fig_oi.add_vline(x=oi_data['max_pain'], line_dash="dot", line_color="orange",
                                  annotation_text=f"Max Pain ${oi_data['max_pain']:.2f}",
                                  annotation_position="top right")
             fig_oi.update_layout(barmode='group', height=260,
@@ -309,42 +377,46 @@ if submitted:
             st.plotly_chart(fig_oi, use_container_width=True)
 
         st.divider()
-        # ── 시각화 끝 ─────────────────────────────────────────
 
-        # 차트
-        df_chart = investment_data['chart_data'].tail(120)
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                            vertical_spacing=0.03, row_heights=[0.7, 0.3])
-        fig.add_trace(go.Candlestick(
-            x=df_chart.index, open=df_chart['Open'], high=df_chart['High'],
-            low=df_chart['Low'], close=df_chart['Close'], name='Price'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['MA20'],
-                                 line=dict(color='orange', width=1.5), name='20일선'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['MA60'],
-                                 line=dict(color='green', width=1.5), name='60일선'), row=1, col=1)
-        fig.add_trace(go.Bar(x=df_chart.index, y=df_chart['Volume'],
-                             name='Volume', marker_color='rgba(100,150,250,0.5)'), row=2, col=1)
-        fig.update_layout(title=f"{TARGET_TICKER} 최근 6개월",
-                          xaxis_rangeslider_visible=False,
-                          height=500, margin=dict(l=0, r=0, t=40, b=0))
-        fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
-        st.plotly_chart(fig, use_container_width=True)
+        # ── 차트(60%) + 리포트(40%) 나란히 — 모바일에서 CSS로 세로 스택 ──
+        chart_col, report_col = st.columns([6, 4])
 
-        st.divider()
-        with st.container(border=True):
-            st.markdown(final_report)
+        with chart_col:
+            # .price-chart 클래스 div로 감싸 CSS 모바일 높이 타깃팅
+            st.markdown('<div class="price-chart">', unsafe_allow_html=True)
+            df_chart = investment_data['chart_data'].tail(120)
+            fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                                vertical_spacing=0.03, row_heights=[0.7, 0.3])
+            fig.add_trace(go.Candlestick(
+                x=df_chart.index, open=df_chart['Open'], high=df_chart['High'],
+                low=df_chart['Low'], close=df_chart['Close'], name='Price'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['MA20'],
+                                     line=dict(color='orange', width=1.5), name='20일선'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['MA60'],
+                                     line=dict(color='green', width=1.5), name='60일선'), row=1, col=1)
+            fig.add_trace(go.Bar(x=df_chart.index, y=df_chart['Volume'],
+                                 name='Volume', marker_color='rgba(100,150,250,0.5)'), row=2, col=1)
+            fig.update_layout(title=f"{TARGET_TICKER} 최근 6개월",
+                              xaxis_rangeslider_visible=False,
+                              height=500, margin=dict(l=0, r=0, t=40, b=0))
+            fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+            st.plotly_chart(fig, use_container_width=True)
+            st.markdown('</div>', unsafe_allow_html=True)
 
-        # 옵션 데이터 원본 확인 (수집 실패 여부 진단용)
-        with st.expander("🔍 옵션 데이터 수집 확인 (AI에 전달된 원본값)"):
-            st.markdown("**1차 만기 PCR:**")
-            st.code(investment_data.get('options', 'KEY_MISSING'))
-            st.markdown("**만기별 PCR (3개):**")
-            st.code(investment_data.get('options_pcr_multi', 'KEY_MISSING'))
-            mp = investment_data.get('max_pain')
-            st.markdown(f"**Max Pain:** {'${:.2f}'.format(mp) if mp else '산출 불가 (None)'}")
-            hm = investment_data.get('oi_heatmap')
-            st.markdown(f"**OI 히트맵 데이터:** {'행사가 {}개 로드됨'.format(len(hm['strikes'])) if hm else '없음'}")
-            st.caption("에러 메시지가 표시되면 해당 종목의 옵션 체인이 yfinance에서 조회 불가인 것입니다.")
+        with report_col:
+            with st.container(border=True):
+                st.markdown(final_report)
+
+            with st.expander("🔍 옵션 데이터 수집 확인 (AI에 전달된 원본값)"):
+                st.markdown("**1차 만기 PCR:**")
+                st.code(investment_data.get('options', 'KEY_MISSING'))
+                st.markdown("**만기별 PCR (3개):**")
+                st.code(investment_data.get('options_pcr_multi', 'KEY_MISSING'))
+                mp = investment_data.get('max_pain')
+                st.markdown(f"**Max Pain:** {'${:.2f}'.format(mp) if mp else '산출 불가 (None)'}")
+                hm = investment_data.get('oi_heatmap')
+                st.markdown(f"**OI 히트맵 데이터:** {'행사가 {}개 로드됨'.format(len(hm['strikes'])) if hm else '없음'}")
+                st.caption("에러 메시지가 표시되면 해당 종목의 옵션 체인이 yfinance에서 조회 불가인 것입니다.")
 
     except Exception as e:
         st.error(f"실행 중 오류가 발생했습니다: {e}")
