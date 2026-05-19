@@ -1,6 +1,9 @@
+import time
 import streamlit as st
 from google import genai
 from google.genai import types
+
+MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
 
 def get_gemini_client():
     API_KEY = st.secrets["GEMINI_API_KEY"]
@@ -243,10 +246,21 @@ def generate_investment_report(data):
         temperature=0.2,
         system_instruction=system_instruction,
     )
-    
-    response = client.models.generate_content(
-        model='gemini-2.5-flash',
-        contents=user_prompt,
-        config=config
-    )
-    return response.text
+
+    last_error = None
+    for model in MODELS:
+        for attempt in range(3):
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=user_prompt,
+                    config=config
+                )
+                return response.text
+            except Exception as e:
+                last_error = e
+                if "503" in str(e) or "UNAVAILABLE" in str(e):
+                    time.sleep(2 ** attempt)  # 1s, 2s, 4s
+                    continue
+                raise  # 503 외 에러는 바로 올림
+    raise last_error
