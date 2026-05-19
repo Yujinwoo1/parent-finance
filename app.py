@@ -200,6 +200,82 @@ if submitted:
                 save_favorite(TARGET_TICKER)
                 st.rerun()
 
+        # ── 빠른 진단 시각화 ──────────────────────────────────
+        st.markdown("### 📊 빠른 진단")
+
+        # 진입 점수 + RSI 게이지 (나란히)
+        entry_color = "#2ECC71" if investment_data['entry_grade'] == "GREEN" \
+                 else "#E74C3C" if investment_data['entry_grade'] == "RED" \
+                 else "#F39C12"
+
+        rsi_num   = float(investment_data['rsi'].split('(')[0].strip())
+        rsi_color = "#E74C3C" if rsi_num >= 70 else "#2ECC71" if rsi_num <= 30 else "#3498DB"
+
+        fig_gauges = make_subplots(
+            rows=1, cols=2,
+            specs=[[{"type": "indicator"}, {"type": "indicator"}]],
+            column_widths=[0.5, 0.5]
+        )
+        fig_gauges.add_trace(go.Indicator(
+            mode="gauge+number",
+            value=investment_data['entry_score'],
+            title={"text": "진입 점수"},
+            gauge={
+                "axis": {"range": [0, 100], "tickwidth": 1},
+                "bar":  {"color": entry_color, "thickness": 0.25},
+                "steps": [
+                    {"range": [0, 30],  "color": "#FADBD8"},
+                    {"range": [30, 75], "color": "#FEF9E7"},
+                    {"range": [75, 100],"color": "#D5F5E3"},
+                ],
+                "threshold": {"line": {"color": "gray", "width": 2},
+                              "thickness": 0.75, "value": investment_data['entry_score']},
+            }
+        ), row=1, col=1)
+        fig_gauges.add_trace(go.Indicator(
+            mode="gauge+number",
+            value=rsi_num,
+            title={"text": "RSI (14)"},
+            gauge={
+                "axis": {"range": [0, 100], "tickwidth": 1},
+                "bar":  {"color": rsi_color, "thickness": 0.25},
+                "steps": [
+                    {"range": [0, 30],  "color": "#D5F5E3"},
+                    {"range": [30, 70], "color": "#EBF5FB"},
+                    {"range": [70, 100],"color": "#FADBD8"},
+                ],
+                "threshold": {"line": {"color": "gray", "width": 2},
+                              "thickness": 0.75, "value": rsi_num},
+            }
+        ), row=1, col=2)
+        fig_gauges.update_layout(height=220, margin=dict(l=10, r=10, t=10, b=10),
+                                  paper_bgcolor="rgba(0,0,0,0)")
+        st.plotly_chart(fig_gauges, use_container_width=True)
+
+        # 손익비 (R/R) 메트릭
+        cur   = investment_data['current_price']
+        risk  = cur - investment_data['stop_loss']
+        rwd1  = investment_data['target1'] - cur
+        rwd2  = investment_data['target2'] - cur
+        rr1   = rwd1 / risk if risk > 0 else 0
+        rr2   = rwd2 / risk if risk > 0 else 0
+
+        mc1, mc2, mc3 = st.columns(3)
+        mc1.metric("🛡️ 손절가 (ATR×1.5)",
+                   f"${investment_data['stop_loss']:.2f}",
+                   f"-{risk/cur*100:.1f}%", delta_color="inverse")
+        mc2.metric("🎯 1차 익절 (ATR×2.0)",
+                   f"${investment_data['target1']:.2f}",
+                   f"+{rwd1/cur*100:.1f}%  ·  손익비 1:{rr1:.1f}")
+        mc3.metric("🚀 2차 익절 (ATR×3.5)",
+                   f"${investment_data['target2']:.2f}",
+                   f"+{rwd2/cur*100:.1f}%  ·  손익비 1:{rr2:.1f}")
+
+        rr_label = "✅ 진입 승인 (R/R ≥ 1:2)" if rr1 >= 2 else "⛔ 진입 보류 (R/R < 1:2)"
+        st.caption(f"1차 손익비 기준: {rr_label}")
+        st.divider()
+        # ── 시각화 끝 ─────────────────────────────────────────
+
         # 차트
         df_chart = investment_data['chart_data'].tail(120)
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
@@ -222,6 +298,16 @@ if submitted:
         st.divider()
         with st.container(border=True):
             st.markdown(final_report)
+
+        # 옵션 데이터 원본 확인 (수집 실패 여부 진단용)
+        with st.expander("🔍 옵션 데이터 수집 확인 (AI에 전달된 원본값)"):
+            st.markdown("**1차 만기 PCR:**")
+            st.code(investment_data.get('options', 'KEY_MISSING'))
+            st.markdown("**만기별 PCR (3개):**")
+            st.code(investment_data.get('options_pcr_multi', 'KEY_MISSING'))
+            mp = investment_data.get('max_pain')
+            st.markdown(f"**Max Pain:** {'${:.2f}'.format(mp) if mp else '산출 불가 (None)'}")
+            st.caption("'수집 불가' 표시 시 해당 종목의 옵션 데이터가 yfinance에서 조회 안 되는 것입니다.")
 
     except Exception as e:
         st.error(f"실행 중 오류가 발생했습니다: {e}")
