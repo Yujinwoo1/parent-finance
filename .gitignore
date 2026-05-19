@@ -1,0 +1,36 @@
+# Streamlit secrets - NEVER commit this
+.streamlit/secrets.toml
+
+# Local database (ephemeral on Streamlit Cloud)
+investment_logs.db
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# Virtual environments
+venv/
+env/
+.env
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code internal
+.claude/
+
+# Unrelated subprojects
+FRED/
+invest_py/
