@@ -90,7 +90,8 @@ def _fetch_ticker_data(ticker_symbol):
     else:
         ichi_status = "산출 불가"
 
-    # --- Options: multi-expiry PCR + Max Pain ---
+    # --- Options: multi-expiry PCR + Max Pain + OI Heatmap ---
+    oi_heatmap = None
     try:
         expirations = ticker.options
         pcr_list, opt0 = [], None
@@ -121,10 +122,25 @@ def _fetch_ticker_data(ticker_symbol):
                 if cp + pp < min_pain:
                     min_pain, max_pain_price = cp + pp, s
             max_pain = round(float(max_pain_price), 2)
+
+            # OI 히트맵: 현재가 ±25% 범위 내 행사가만 추출
+            lo, hi   = close_price * 0.75, close_price * 1.25
+            hm_c     = calls_df[(calls_df['strike'] >= lo) & (calls_df['strike'] <= hi)]
+            hm_p     = puts_df[(puts_df['strike']  >= lo) & (puts_df['strike']  <= hi)]
+            hm_stk   = sorted(set(hm_c['strike'].tolist() + hm_p['strike'].tolist()))
+            if hm_stk:
+                oi_heatmap = {
+                    'strikes':  hm_stk,
+                    'calls':    [float(hm_c[hm_c['strike'] == s]['openInterest'].sum()) for s in hm_stk],
+                    'puts':     [float(hm_p[hm_p['strike'] == s]['openInterest'].sum()) for s in hm_stk],
+                    'max_pain': max_pain,
+                }
         else:
             options_context, max_pain = "옵션 데이터 없음", None
-    except Exception:
-        options_context, options_pcr_multi, max_pain = "수집 불가", "수집 불가", None
+    except Exception as e:
+        options_context  = f"수집 불가 ({type(e).__name__}: {str(e)[:80]})"
+        options_pcr_multi = "수집 불가"
+        max_pain          = None
 
     # --- VIX ---
     try:
@@ -210,7 +226,73 @@ def _fetch_ticker_data(ticker_symbol):
         'entry_score': entry_score, 'entry_grade': entry_grade,
         'stop_loss': stop_loss, 'target1': target1, 'target2': target2,
         'week52': week52, 'options_pcr_multi': options_pcr_multi, 'max_pain': max_pain,
+        'oi_heatmap': oi_heatmap,
     }
+
+
+def _get_tradier_options(ticker_symbol, close_price, api_token):
+    """Tradier API로 실시간 옵션 데이터 수집. TRADIER_TOKEN이 있을 때만 호출됨."""
+    base    = "https://api.tradier.com/v1/markets/options"
+    headers = {"Authorization": f"Bearer {api_token}", "Accept": "application/json"}
+
+    resp       = requests.get(f"{base}/expirations", params={"symbol": ticker_symbol, "includeAllRoots": "true"}, headers=headers, timeout=10)
+    expirations = resp.json().get("expirations", {}).get("date", [])
+    if not expirations:
+        return None
+
+    pcr_list, opt0_calls, opt0_puts = [], None, None
+    for i, exp in enumerate(expirations[:3]):
+        resp    = requests.get(f"{base}/chains", params={"symbol": ticker_symbol, "expiration": exp, "greeks": "false"}, headers=headers, timeout=10)
+        options = resp.json().get("options", {}).get("option", [])
+        if not options:
+            continue
+        calls_oi = sum((o.get("open_interest") or 0) for o in options if o.get("option_type") == "call")
+        puts_oi  = sum((o.get("open_interest") or 0) for o in options if o.get("option_type") == "put")
+        pcr      = puts_oi / calls_oi if calls_oi > 0 else 0
+        sentiment = "극단적 공포" if pcr >= 1.2 else "극단적 탐욕" if pcr <= 0.7 else "중립"
+        pcr_list.append(f"{exp}: PCR {pcr:.2f} ({sentiment})")
+        if i == 0:
+            opt0_calls = [{"strike": o["strike"], "openInterest": o.get("open_interest") or 0} for o in options if o.get("option_type") == "call"]
+            opt0_puts  = [{"strike": o["strike"], "openInterest": o.get("open_interest") or 0} for o in options if o.get("option_type") == "put"]
+
+    if not pcr_list:
+        return None
+
+    options_pcr_multi = "\n".join(pcr_list)
+    options_context, max_pain, oi_heatmap = "옵션 데이터 없음", None, None
+
+    if opt0_calls and opt0_puts:
+        calls_total = sum(c["openInterest"] for c in opt0_calls)
+        puts_total  = sum(p["openInterest"] for p in opt0_puts)
+        pcr0   = puts_total / calls_total if calls_total > 0 else 0
+        pcr0_s = "극단적 공포(반등 기회)" if pcr0 >= 1.2 else "극단적 탐욕(과열 주의)" if pcr0 <= 0.7 else "중립"
+        options_context = f"최근 만기일 기준 Put/Call Ratio: {pcr0:.2f} ({pcr0_s}) [Tradier 실시간]"
+
+        calls_df = pd.DataFrame(opt0_calls)
+        puts_df  = pd.DataFrame(opt0_puts)
+        strikes  = sorted(set(calls_df['strike'].tolist() + puts_df['strike'].tolist()))
+        min_pain, max_pain_price = float('inf'), close_price
+        for s in strikes:
+            cp = ((s - calls_df['strike']).clip(lower=0) * calls_df['openInterest']).sum()
+            pp = ((puts_df['strike'] - s).clip(lower=0) * puts_df['openInterest']).sum()
+            if cp + pp < min_pain:
+                min_pain, max_pain_price = cp + pp, s
+        max_pain = round(float(max_pain_price), 2)
+
+        lo, hi  = close_price * 0.75, close_price * 1.25
+        hm_c    = calls_df[(calls_df['strike'] >= lo) & (calls_df['strike'] <= hi)]
+        hm_p    = puts_df[(puts_df['strike']  >= lo) & (puts_df['strike']  <= hi)]
+        hm_stk  = sorted(set(hm_c['strike'].tolist() + hm_p['strike'].tolist()))
+        if hm_stk:
+            oi_heatmap = {
+                'strikes':  hm_stk,
+                'calls':    [float(hm_c[hm_c['strike'] == s]['openInterest'].sum()) for s in hm_stk],
+                'puts':     [float(hm_p[hm_p['strike'] == s]['openInterest'].sum()) for s in hm_stk],
+                'max_pain': max_pain,
+            }
+
+    return {'options_context': options_context, 'options_pcr_multi': options_pcr_multi,
+            'max_pain': max_pain, 'oi_heatmap': oi_heatmap}
 
 
 def prepare_investment_data(ticker_symbol, portfolio_context="", trading_feedback=""):
@@ -219,4 +301,18 @@ def prepare_investment_data(ticker_symbol, portfolio_context="", trading_feedbac
     data['portfolio'] = portfolio_context
     data['feedback']  = trading_feedback
     data['memory']    = get_recent_report(ticker_symbol)   # 항상 최신값
+
+    # TRADIER_TOKEN이 있으면 옵션 데이터를 실시간으로 교체
+    try:
+        tradier_token = st.secrets.get("TRADIER_TOKEN")
+        if tradier_token:
+            td = _get_tradier_options(ticker_symbol, data['current_price'], tradier_token)
+            if td:
+                data['options']           = td['options_context']
+                data['options_pcr_multi'] = td['options_pcr_multi']
+                data['max_pain']          = td['max_pain']
+                data['oi_heatmap']        = td['oi_heatmap']
+    except Exception:
+        pass
+
     return data

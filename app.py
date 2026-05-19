@@ -104,6 +104,17 @@ st.title("🏛️ AI 투자 위원회 분석 시스템")
 st.markdown("객관적 지표와 행동 심리 분석을 통해 **오늘의 BUY / HOLD / SELL 전략**을 확인하세요.")
 st.divider()
 
+# 즐겨찾기 바 (폼 바로 위 — 클릭 한 번으로 티커 전환)
+_favs_main = get_favorites()
+if _favs_main:
+    st.caption("⭐ 즐겨찾기")
+    _fcols = st.columns(min(len(_favs_main), 6))
+    for _i, _fav in enumerate(_favs_main[:6]):
+        with _fcols[_i]:
+            if st.button(_fav, key=f"mfav_{_fav}", use_container_width=True):
+                st.session_state['ticker_input'] = _fav
+                st.rerun()
+
 with st.form("analysis_form"):
     TARGET_TICKER = st.text_input(
         "▶️ 분석할 기업의 티커 (예: TSLA, AAPL)",
@@ -273,6 +284,30 @@ if submitted:
 
         rr_label = "✅ 진입 승인 (R/R ≥ 1:2)" if rr1 >= 2 else "⛔ 진입 보류 (R/R < 1:2)"
         st.caption(f"1차 손익비 기준: {rr_label}")
+
+        # OI 히트맵 (옵션 미결제약정 분포)
+        oi_data = investment_data.get('oi_heatmap')
+        if oi_data and oi_data.get('strikes'):
+            st.markdown("##### 📊 옵션 OI 분포 (현재가 ±25%)")
+            fig_oi = go.Figure()
+            fig_oi.add_trace(go.Bar(x=oi_data['strikes'], y=oi_data['calls'],
+                                    name='Call OI', marker_color='rgba(46,204,113,0.7)'))
+            fig_oi.add_trace(go.Bar(x=oi_data['strikes'], y=oi_data['puts'],
+                                    name='Put OI', marker_color='rgba(231,76,60,0.7)'))
+            fig_oi.add_vline(x=investment_data['current_price'], line_dash="dash",
+                             line_color="#3498DB",
+                             annotation_text=f"현재가 ${investment_data['current_price']:.2f}",
+                             annotation_position="top left")
+            if oi_data.get('max_pain'):
+                fig_oi.add_vline(x=oi_data['max_pain'], line_dash="dot",
+                                 line_color="orange",
+                                 annotation_text=f"Max Pain ${oi_data['max_pain']:.2f}",
+                                 annotation_position="top right")
+            fig_oi.update_layout(barmode='group', height=260,
+                                  margin=dict(l=0, r=0, t=35, b=0),
+                                  legend=dict(orientation='h', yanchor='bottom', y=1.02))
+            st.plotly_chart(fig_oi, use_container_width=True)
+
         st.divider()
         # ── 시각화 끝 ─────────────────────────────────────────
 
@@ -307,7 +342,9 @@ if submitted:
             st.code(investment_data.get('options_pcr_multi', 'KEY_MISSING'))
             mp = investment_data.get('max_pain')
             st.markdown(f"**Max Pain:** {'${:.2f}'.format(mp) if mp else '산출 불가 (None)'}")
-            st.caption("'수집 불가' 표시 시 해당 종목의 옵션 데이터가 yfinance에서 조회 안 되는 것입니다.")
+            hm = investment_data.get('oi_heatmap')
+            st.markdown(f"**OI 히트맵 데이터:** {'행사가 {}개 로드됨'.format(len(hm['strikes'])) if hm else '없음'}")
+            st.caption("에러 메시지가 표시되면 해당 종목의 옵션 체인이 yfinance에서 조회 불가인 것입니다.")
 
     except Exception as e:
         st.error(f"실행 중 오류가 발생했습니다: {e}")
