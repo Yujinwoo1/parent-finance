@@ -3,7 +3,7 @@ import streamlit as st
 from google import genai
 from google.genai import types
 
-MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+MODELS = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-flash-8b"]
 
 def get_gemini_client():
     API_KEY = st.secrets["GEMINI_API_KEY"]
@@ -111,8 +111,11 @@ C: 추격 심리 진단 / 인지 편향 경고 / 역발상 관점
                 return response.text
             except Exception as e:
                 last_error = e
-                if "503" in str(e) or "UNAVAILABLE" in str(e):
-                    time.sleep(2 ** attempt)
+                err = str(e)
+                if "503" in err or "UNAVAILABLE" in err:
+                    time.sleep(2 ** attempt)   # 1s → 2s → 4s 후 재시도
                     continue
-                raise
+                if "404" in err or "NOT_FOUND" in err:
+                    break                       # 이 모델 불가 → 다음 모델로
+                raise                           # 그 외 에러는 즉시 올림
     raise last_error
