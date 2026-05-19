@@ -54,6 +54,12 @@ def generate_investment_report(data):
 - 이평선: {data['ma']} / {data['wma']}
 - 보조지표: 일목균형표({data['ichi']}), RSI({data['rsi']}), Stochastic({data['stoch']})
 - 옵션 센티먼트: {data['options']}
+- 🎯 진입 점수: {data['entry_score']}점 / 100 → 판정: {data['entry_grade']} (75↑ GREEN / 30↓ RED)
+- 📐 ATR 기반 가격: 손절가 ${data['stop_loss']:.2f} / 1차 익절 ${data['target1']:.2f} / 2차 익절 ${data['target2']:.2f}
+- 📅 52주 위치: 고가 ${data['week52']['high']:.2f} / 저가 ${data['week52']['low']:.2f} / 현재 {data['week52']['position_pct']:.1f}% 위치
+- 📊 만기별 PCR (최근 3개):
+{data['options_pcr_multi']}
+- 🎯 Max Pain (1차 만기): {'$' + f"{data['max_pain']:.2f}" if data['max_pain'] is not None else '산출 불가'}
 
 ### 📜 [과거 위원회의 기억 (검증용)]
 {data['memory']}
