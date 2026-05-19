@@ -3,7 +3,7 @@ import streamlit as st
 from google import genai
 from google.genai import types
 
-MODELS = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-flash-8b"]
+MODELS = ["gemini-2.5-flash", "gemini-1.5-flash"]
 
 def get_gemini_client():
     API_KEY = st.secrets["GEMINI_API_KEY"]
