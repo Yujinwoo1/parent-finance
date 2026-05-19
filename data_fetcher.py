@@ -1,15 +1,31 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import requests
 from ta.trend import SMAIndicator, IchimokuIndicator
 from ta.trend import MACD as MACDIndicator
 from ta.momentum import RSIIndicator, StochasticOscillator
 from ta.volatility import BollingerBands, AverageTrueRange
-import fear_and_greed
 from database import get_recent_report
 
+
+def _get_fear_greed():
+    """CNN Fear & Greed Index — 라이브러리 없이 직접 HTTP 요청."""
+    try:
+        url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata/previous-close"
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+        fg = resp.json()["fear_and_greed"]
+        return f"점수: {fg['score']:.1f}/100 (상태: {fg['rating']})"
+    except Exception:
+        return "데이터 수집 불가"
+
+
 @st.cache_data(ttl=3600)
-def prepare_investment_data(ticker_symbol, portfolio_context="", trading_feedback=""):
+def _fetch_ticker_data(ticker_symbol):
+    """
+    시장 데이터 수집 및 지표 계산.
+    ticker_symbol만 캐시 키 — portfolio_context·trading_feedback는 여기 포함하지 않음.
+    """
     ticker = yf.Ticker(ticker_symbol)
     df = ticker.history(period="5y")
 
@@ -24,30 +40,28 @@ def prepare_investment_data(ticker_symbol, portfolio_context="", trading_feedbac
     df['MA200'] = SMAIndicator(close=df['Close'], window=200).sma_indicator()
 
     # --- Momentum ---
-    df['RSI'] = RSIIndicator(close=df['Close'], window=14).rsi()
-    stoch = StochasticOscillator(high=df['High'], low=df['Low'], close=df['Close'], window=14, smooth_window=3)
+    df['RSI']     = RSIIndicator(close=df['Close'], window=14).rsi()
+    stoch         = StochasticOscillator(high=df['High'], low=df['Low'], close=df['Close'], window=14, smooth_window=3)
     df['STOCH_K'] = stoch.stoch()
     df['STOCH_D'] = stoch.stoch_signal()
 
     # --- Ichimoku ---
-    ichi = IchimokuIndicator(high=df['High'], low=df['Low'])
-    df['ISA_9']  = ichi.ichimoku_a()
-    df['ISB_26'] = ichi.ichimoku_b()
+    ichi          = IchimokuIndicator(high=df['High'], low=df['Low'])
+    df['ISA_9']   = ichi.ichimoku_a()
+    df['ISB_26']  = ichi.ichimoku_b()
 
     # --- Volatility ---
-    atr_ind = AverageTrueRange(high=df['High'], low=df['Low'], close=df['Close'], window=14)
-    df['ATR']      = atr_ind.average_true_range()
+    atr_ind         = AverageTrueRange(high=df['High'], low=df['Low'], close=df['Close'], window=14)
+    df['ATR']       = atr_ind.average_true_range()
     df['ATR_AVG20'] = df['ATR'].rolling(20).mean()
-
-    bb = BollingerBands(close=df['Close'], window=20, window_dev=2)
-    df['BB_lower'] = bb.bollinger_lband()
+    bb              = BollingerBands(close=df['Close'], window=20, window_dev=2)
+    df['BB_lower']  = bb.bollinger_lband()
 
     # --- MACD ---
-    macd_ind = MACDIndicator(close=df['Close'])
+    macd_ind               = MACDIndicator(close=df['Close'])
     df['MACD_line']        = macd_ind.macd()
     df['MACD_signal_line'] = macd_ind.macd_signal()
 
-    # --- Volume Average ---
     df['VOL_AVG20'] = df['Volume'].rolling(20).mean()
 
     # --- Weekly ---
@@ -64,10 +78,10 @@ def prepare_investment_data(ticker_symbol, portfolio_context="", trading_feedbac
 
     recent_csv_str = df.tail(100)[['Open', 'High', 'Low', 'Close', 'Volume']].to_csv(date_format='%Y-%m-%d')
 
-    rsi_val    = latest.get('RSI', 50)
-    rsi_status = "과매수" if pd.notna(rsi_val) and rsi_val >= 70 else "과매도" if pd.notna(rsi_val) and rsi_val <= 30 else "중립"
-    stoch_k    = latest.get('STOCH_K', 50)
-    stoch_d    = latest.get('STOCH_D', 50)
+    rsi_val      = latest.get('RSI', 50)
+    rsi_status   = "과매수" if pd.notna(rsi_val) and rsi_val >= 70 else "과매도" if pd.notna(rsi_val) and rsi_val <= 30 else "중립"
+    stoch_k      = latest.get('STOCH_K', 50)
+    stoch_d      = latest.get('STOCH_D', 50)
     stoch_status = "골든크로스" if pd.notna(stoch_k) and pd.notna(stoch_d) and stoch_k > stoch_d else "데드크로스"
 
     span_a, span_b = latest.get('ISA_9', 0), latest.get('ISB_26', 0)
@@ -79,15 +93,14 @@ def prepare_investment_data(ticker_symbol, portfolio_context="", trading_feedbac
     # --- Options: multi-expiry PCR + Max Pain ---
     try:
         expirations = ticker.options
-        pcr_list = []
-        opt0 = None
+        pcr_list, opt0 = [], None
         for i, exp in enumerate(expirations[:3]):
             opt = ticker.option_chain(exp)
             if i == 0:
                 opt0 = opt
             calls_oi = opt.calls['openInterest'].fillna(0).sum()
             puts_oi  = opt.puts['openInterest'].fillna(0).sum()
-            pcr = puts_oi / calls_oi if calls_oi > 0 else 0
+            pcr      = puts_oi / calls_oi if calls_oi > 0 else 0
             sentiment = "극단적 공포" if pcr >= 1.2 else "극단적 탐욕" if pcr <= 0.7 else "중립"
             pcr_list.append(f"{exp}: PCR {pcr:.2f} ({sentiment})")
 
@@ -98,7 +111,6 @@ def prepare_investment_data(ticker_symbol, portfolio_context="", trading_feedbac
             pcr0_s = "극단적 공포(반등 기회)" if pcr0 >= 1.2 else "극단적 탐욕(과열 주의)" if pcr0 <= 0.7 else "중립"
             options_context = f"최근 만기일 기준 Put/Call Ratio: {pcr0:.2f} ({pcr0_s})"
 
-            # Max Pain
             calls_df = opt0.calls[['strike', 'openInterest']].fillna(0)
             puts_df  = opt0.puts[['strike', 'openInterest']].fillna(0)
             strikes  = sorted(set(calls_df['strike'].tolist() + puts_df['strike'].tolist()))
@@ -110,42 +122,29 @@ def prepare_investment_data(ticker_symbol, portfolio_context="", trading_feedbac
                     min_pain, max_pain_price = cp + pp, s
             max_pain = round(float(max_pain_price), 2)
         else:
-            options_context   = "옵션 데이터 없음"
-            max_pain          = None
-    except:
-        options_context   = "수집 불가"
-        options_pcr_multi = "수집 불가"
-        max_pain          = None
+            options_context, max_pain = "옵션 데이터 없음", None
+    except Exception:
+        options_context, options_pcr_multi, max_pain = "수집 불가", "수집 불가", None
 
     # --- VIX ---
     try:
-        vix_df      = yf.Ticker("^VIX").history(period="1d")
-        vix_current = vix_df['Close'].iloc[-1]
+        vix_current = yf.Ticker("^VIX").history(period="1d")['Close'].iloc[-1]
         if vix_current >= 30:   vix_status = "극단적 공포 (패닉 셀링 구간)"
         elif vix_current >= 20: vix_status = "공포 (경계 구간)"
         elif vix_current <= 15: vix_status = "탐욕 (안정 및 과열 우려)"
         else:                   vix_status = "중립"
         vix_context = f"{vix_current:.2f} ({vix_status})"
-    except:
+    except Exception:
         vix_context = "수집 불가"
 
-    # --- Fear & Greed ---
-    try:
-        fg         = fear_and_greed.get()
-        fg_context = f"점수: {fg.value:.1f}/100 (상태: {fg.description})"
-    except:
-        fg_context = "데이터 수집 지연 (CNN 서버 불안정)"
+    fg_context = _get_fear_greed()
 
-    # --- 52-Week High/Low Position ---
+    # --- 52-Week Position ---
     week52_high = float(df['Close'].tail(252).max())
     week52_low  = float(df['Close'].tail(252).min())
     w52_range   = week52_high - week52_low
     w52_pos     = round((close_price - week52_low) / w52_range * 100, 1) if w52_range > 0 else 50.0
-    week52 = {
-        'high': round(week52_high, 2),
-        'low':  round(week52_low, 2),
-        'position_pct': w52_pos,
-    }
+    week52 = {'high': round(week52_high, 2), 'low': round(week52_low, 2), 'position_pct': w52_pos}
 
     # --- ATR Stop-Loss / Targets ---
     atr_v     = float(latest['ATR']) if pd.notna(latest.get('ATR')) else 0.0
@@ -157,22 +156,19 @@ def prepare_investment_data(ticker_symbol, portfolio_context="", trading_feedbac
     score = 50
     rsi_f = float(rsi_val) if pd.notna(rsi_val) else 50.0
 
-    if rsi_f < 30:
-        score += 14
-    elif rsi_f < 40:
-        score += 8
-    if rsi_f > 70:
-        score -= 10
+    if rsi_f < 30:    score += 14
+    elif rsi_f < 40:  score += 8
+    if rsi_f > 70:    score -= 10
 
     bb_lower_v = latest.get('BB_lower', float('nan'))
     if pd.notna(bb_lower_v) and close_price <= float(bb_lower_v):
         score += 10
 
-    ma50_v  = latest.get('MA50',      float('nan'))
-    ma200_v = latest.get('MA200',     float('nan'))
-    vol_avg = latest.get('VOL_AVG20', float('nan'))
-    atr_cur  = latest.get('ATR',       float('nan'))
-    atr_avg20 = latest.get('ATR_AVG20', float('nan'))
+    ma50_v    = latest.get('MA50',       float('nan'))
+    ma200_v   = latest.get('MA200',      float('nan'))
+    vol_avg   = latest.get('VOL_AVG20',  float('nan'))
+    atr_cur   = latest.get('ATR',        float('nan'))
+    atr_avg20 = latest.get('ATR_AVG20',  float('nan'))
 
     ma_aligned = pd.notna(ma50_v) and pd.notna(ma200_v) and close_price > float(ma50_v) > float(ma200_v)
     vol_surge  = pd.notna(vol_avg) and latest['Volume'] >= 2 * float(vol_avg)
@@ -203,25 +199,24 @@ def prepare_investment_data(ticker_symbol, portfolio_context="", trading_feedbac
     entry_score = max(0, min(100, score))
     entry_grade = "GREEN" if entry_score >= 75 else "RED" if entry_score < 30 else "YELLOW"
 
-    past_memory = get_recent_report(ticker_symbol)
-
     return {
         'ticker': ticker_symbol, 'current_price': close_price, 'last_date': last_date_str,
-        'portfolio': portfolio_context, 'feedback': trading_feedback,
         'ohlcv': f"시가 {latest['Open']:.2f} / 고가 {latest['High']:.2f} / 저가 {latest['Low']:.2f} / 종가 {close_price:.2f} / 거래량 {int(latest['Volume'])}",
         'ma':  f"일봉: 5일({latest.get('MA5',0):.2f}), 20일({latest.get('MA20',0):.2f}), 60일({latest.get('MA60',0):.2f}), 200일({latest.get('MA200',0):.2f})",
         'wma': f"주봉: 5주({latest_weekly.get('WMA5',0):.2f}), 20주({latest_weekly.get('WMA20',0):.2f}), 60주({latest_weekly.get('WMA60',0):.2f})",
         'ichi': ichi_status, 'rsi': f"{rsi_val:.1f} ({rsi_status})", 'stoch': f"K: {stoch_k:.1f}, D: {stoch_d:.1f} ({stoch_status})",
-        'options': options_context, 'memory': past_memory, 'recent_data': recent_csv_str,
-        'vix': vix_context, 'cnn_fg': fg_context,
-        'chart_data': df,
-        # New
-        'entry_score':      entry_score,
-        'entry_grade':      entry_grade,
-        'stop_loss':        stop_loss,
-        'target1':          target1,
-        'target2':          target2,
-        'week52':           week52,
-        'options_pcr_multi': options_pcr_multi,
-        'max_pain':         max_pain,
+        'options': options_context, 'recent_data': recent_csv_str,
+        'vix': vix_context, 'cnn_fg': fg_context, 'chart_data': df,
+        'entry_score': entry_score, 'entry_grade': entry_grade,
+        'stop_loss': stop_loss, 'target1': target1, 'target2': target2,
+        'week52': week52, 'options_pcr_multi': options_pcr_multi, 'max_pain': max_pain,
     }
+
+
+def prepare_investment_data(ticker_symbol, portfolio_context="", trading_feedback=""):
+    """캐시된 시장 데이터에 사용자 컨텍스트·DB 기억을 합쳐 반환."""
+    data              = _fetch_ticker_data(ticker_symbol).copy()
+    data['portfolio'] = portfolio_context
+    data['feedback']  = trading_feedback
+    data['memory']    = get_recent_report(ticker_symbol)   # 항상 최신값
+    return data
