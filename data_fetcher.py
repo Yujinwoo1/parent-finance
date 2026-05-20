@@ -461,6 +461,178 @@ def _get_tradier_options(ticker_symbol, close_price, api_token):
             'max_pain': max_pain, 'oi_heatmap': oi_heatmap}
 
 
+@st.cache_data(ttl=2592000)   # 30일
+def get_sp500_tickers():
+    """S&P 500 구성 종목 티커 리스트 (Wikipedia)."""
+    try:
+        tables  = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", header=0)
+        tickers = tables[0]["Symbol"].str.replace(".", "-", regex=False).tolist()
+        return sorted(set(tickers))
+    except Exception:
+        return [
+            "AAPL","MSFT","NVDA","AMZN","META","GOOGL","GOOG","BRK-B","LLY","AVGO",
+            "JPM","TSLA","UNH","V","XOM","MA","COST","PG","JNJ","HD","NFLX","MRK",
+            "ORCL","CRM","BAC","AMD","WMT","CVX","ABBV","KO","PEP","CSCO","MCD","ACN",
+            "ADBE","MS","WFC","DHR","DIS","PM","INTC","GE","QCOM","UBER","VZ","INTU",
+            "IBM","CAT","NOW","BKNG","SPGI",
+        ]
+
+
+@st.cache_data(ttl=2592000)   # 30일
+def get_ndx100_tickers():
+    """Nasdaq-100 구성 종목 티커 리스트 (Wikipedia)."""
+    try:
+        tables = pd.read_html("https://en.wikipedia.org/wiki/Nasdaq-100", header=0)
+        for t in tables:
+            for col in ("Ticker", "Symbol"):
+                if col in t.columns:
+                    return sorted(set(t[col].str.replace(".", "-", regex=False).tolist()))
+        raise ValueError("column not found")
+    except Exception:
+        return [
+            "AAPL","MSFT","NVDA","AMZN","META","GOOGL","AVGO","TSLA","COST","NFLX",
+            "AMD","ADBE","INTU","CSCO","QCOM","INTC","PEP","HON","TXN","AMGN",
+            "BKNG","SBUX","GILD","MDLZ","REGN","ADP","VRTX","ISRG","PANW","ADI",
+            "MU","MELI","LRCX","KLAC","SNPS","CDNS","CSX","NXPI","FTNT","WDAY",
+            "ABNB","DXCM","MNST","KHC","MAR","IDXX","FAST","PCAR","CTAS","ODFL",
+        ]
+
+
+@st.cache_data(ttl=3600)
+def scan_ticker_batch(batch: tuple) -> list:
+    """1배치(≤50종목) 기술 진입점수 일괄 계산 — AI·옵션 없이 빠른 스캔."""
+    from ta.trend import SMAIndicator, MACD as MACDIndicator
+    from ta.momentum import RSIIndicator
+    from ta.volatility import BollingerBands
+    results = []
+    batch_list = list(batch)
+    try:
+        raw = yf.download(
+            batch_list, period="1y", group_by="ticker",
+            auto_adjust=True, progress=False, threads=True,
+        )
+    except Exception:
+        return results
+
+    for sym in batch_list:
+        try:
+            if isinstance(raw.columns, pd.MultiIndex):
+                if sym not in raw.columns.get_level_values(0):
+                    continue
+                df = raw[sym].copy()
+            else:
+                df = raw.copy()
+            df = df.dropna(subset=["Close"])
+            if len(df) < 60:
+                continue
+
+            df["MA50"]             = SMAIndicator(close=df["Close"], window=50).sma_indicator()
+            df["MA200"]            = SMAIndicator(close=df["Close"], window=min(200, len(df))).sma_indicator()
+            df["RSI"]              = RSIIndicator(close=df["Close"], window=14).rsi()
+            bb = BollingerBands(close=df["Close"], window=20, window_dev=2)
+            df["BB_lower"]         = bb.bollinger_lband()
+            df["BB_upper"]         = bb.bollinger_hband()
+            macd_ind               = MACDIndicator(close=df["Close"])
+            df["MACD_line"]        = macd_ind.macd()
+            df["MACD_signal_line"] = macd_ind.macd_signal()
+            df["VOL_AVG20"]        = df["Volume"].rolling(20).mean()
+
+            latest = df.iloc[-1]
+            prev   = df.iloc[-2] if len(df) > 1 else latest
+            c      = float(latest["Close"])
+
+            w52h    = float(df["Close"].max())
+            w52l    = float(df["Close"].min())
+            w52r    = w52h - w52l
+            w52_pct = (c - w52l) / w52r * 100 if w52r > 0 else 50.0
+
+            score = 50
+            rsi_f = float(latest["RSI"]) if pd.notna(latest.get("RSI")) else 50.0
+
+            if   rsi_f < 25:  score += 20
+            elif rsi_f < 30:  score += 15
+            elif rsi_f < 40:  score += 8
+            elif rsi_f < 50:  score += 3
+            elif rsi_f < 60:  score += 0
+            elif rsi_f < 70:  score -= 5
+            elif rsi_f < 80:  score -= 12
+            else:              score -= 18
+
+            bb_l = float(latest["BB_lower"]) if pd.notna(latest.get("BB_lower")) else c
+            bb_h = float(latest["BB_upper"]) if pd.notna(latest.get("BB_upper")) else c
+            if   c <= bb_l:         score += 12
+            elif c <= bb_l * 1.015: score += 6
+            elif c >= bb_h:         score -= 8
+            elif c >= bb_h * 0.99:  score -= 4
+
+            ma50_v  = float(latest["MA50"])  if pd.notna(latest.get("MA50"))  else 0.0
+            ma200_v = float(latest["MA200"]) if pd.notna(latest.get("MA200")) else 0.0
+            ma_full_up = ma_full_dn = False
+            if   c > ma50_v > ma200_v:  score += 15; ma_full_up = True
+            elif c > ma50_v:            score += 6
+            elif c < ma50_v < ma200_v:  score -= 18; ma_full_dn = True
+            else:                        score -= 6
+
+            mc  = float(latest["MACD_line"])        if pd.notna(latest.get("MACD_line"))        else 0.0
+            sc_v = float(latest["MACD_signal_line"]) if pd.notna(latest.get("MACD_signal_line")) else 0.0
+            mp  = float(prev["MACD_line"])           if pd.notna(prev.get("MACD_line"))          else 0.0
+            sp  = float(prev["MACD_signal_line"])    if pd.notna(prev.get("MACD_signal_line"))   else 0.0
+            just_crossed = mc >= sc_v and mp < sp
+            macd_above   = mc > sc_v
+            if   just_crossed: score += 10
+            elif macd_above:   score += 5
+            else:              score -= 6
+            if ma_full_dn and just_crossed:
+                score -= 6
+
+            vol_avg = float(latest["VOL_AVG20"]) if pd.notna(latest.get("VOL_AVG20")) and float(latest.get("VOL_AVG20", 0)) > 0 else 1.0
+            vr = float(latest["Volume"]) / vol_avg
+            if   vr >= 2.0: score += 8
+            elif vr >= 1.5: score += 5
+            elif vr >= 1.3: score += 3
+
+            if   w52_pct <= 15: score += 10
+            elif w52_pct <= 30: score += 5
+            elif w52_pct >= 90: score -= 8
+
+            if rsi_f <= 35 and c <= bb_l * 1.015:                             score += 8
+            if rsi_f >= 70 and w52_pct >= 90:                                  score -= 8
+            if ma_full_up and macd_above and not just_crossed and rsi_f < 65:  score += 5
+
+            entry_score = max(0, min(100, score))
+            entry_grade = "GREEN" if entry_score >= 65 else "RED" if entry_score < 35 else "YELLOW"
+            results.append({
+                "ticker":      sym,
+                "price":       round(c, 2),
+                "entry_score": entry_score,
+                "entry_grade": entry_grade,
+                "rsi":         round(rsi_f, 1),
+                "w52_pct":     round(w52_pct, 1),
+            })
+        except Exception:
+            pass
+    return results
+
+
+@st.cache_data(ttl=86400)
+def get_price_on_or_after(ticker: str, date_str: str, days_offset: int):
+    """date_str + days_offset일 이후 첫 거래일 종가 반환 (아직 미도달 시 None)."""
+    import datetime as _dt
+    d     = _dt.datetime.strptime(date_str, "%Y-%m-%d")
+    start = d + _dt.timedelta(days=days_offset)
+    if start.date() >= _dt.date.today():
+        return None
+    end = start + _dt.timedelta(days=10)
+    try:
+        hist = yf.Ticker(ticker).history(
+            start=start.strftime("%Y-%m-%d"),
+            end=end.strftime("%Y-%m-%d"),
+        )
+        return round(float(hist["Close"].iloc[0]), 2) if not hist.empty else None
+    except Exception:
+        return None
+
+
 def prepare_investment_data(ticker_symbol, portfolio_context="", trading_feedback=""):
     """캐시된 시장 데이터에 사용자 컨텍스트·DB 기억을 합쳐 반환."""
     data              = _fetch_ticker_data(ticker_symbol).copy()

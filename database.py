@@ -65,7 +65,59 @@ def get_recent_report(ticker):
         return f"최근 기록 조회 실패: {e}"
 
 
-def save_to_notion(ticker, price, vix, fg, psycho, action, report, audit_winner=None):
+def _find_today_report(ticker):
+    """오늘 날짜 + 같은 티커 리포트 페이지 ID 반환 (없으면 None)."""
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    try:
+        res = requests.post(
+            f"https://api.notion.com/v1/databases/{_reports_db()}/query",
+            headers=_headers(),
+            json={
+                "filter": {
+                    "and": [
+                        {"property": "종목명", "title":  {"equals": ticker}},
+                        {"property": "날짜",   "date":   {"equals": today}},
+                    ]
+                },
+                "page_size": 1,
+            },
+            timeout=10,
+        )
+        results = res.json().get("results", [])
+        return results[0]["id"] if results else None
+    except Exception:
+        return None
+
+
+def _replace_page_blocks(page_id, properties, content_blocks):
+    """기존 페이지 속성 업데이트 + 블록 전체 교체."""
+    # 1) 기존 블록 삭제
+    blk_res = requests.get(
+        f"https://api.notion.com/v1/blocks/{page_id}/children",
+        headers=_headers(), timeout=10
+    )
+    for blk in blk_res.json().get("results", []):
+        try:
+            requests.delete(
+                f"https://api.notion.com/v1/blocks/{blk['id']}",
+                headers=_headers(), timeout=5,
+            )
+        except Exception:
+            pass
+    # 2) 속성 업데이트
+    requests.patch(
+        f"https://api.notion.com/v1/pages/{page_id}",
+        headers=_headers(), json={"properties": properties}, timeout=10,
+    )
+    # 3) 새 블록 추가
+    return requests.patch(
+        f"https://api.notion.com/v1/blocks/{page_id}/children",
+        headers=_headers(), json={"children": content_blocks}, timeout=15,
+    )
+
+
+def save_to_notion(ticker, price, vix, fg, psycho, action, report,
+                   audit_winner=None, verdict=None):
     try:
         content_blocks = [
             {
@@ -88,22 +140,84 @@ def save_to_notion(ticker, price, vix, fg, psycho, action, report, audit_winner=
         }
         if audit_winner:
             properties["audit_winner"] = {"rich_text": [{"text": {"content": audit_winner}}]}
+        if verdict:
+            properties["verdict"] = {"rich_text": [{"text": {"content": verdict}}]}
+
+        # ── 오늘 같은 티커 리포트가 이미 있으면 업데이트, 없으면 생성 ──
+        existing_id = _find_today_report(ticker)
+        if existing_id:
+            res = _replace_page_blocks(existing_id, properties, content_blocks)
+            ok  = res.status_code == 200
+            msg = "노션 리포트 업데이트 성공" if ok else f"노션 업데이트 에러: {res.text[:200]}"
+            return ok, msg
 
         payload = {
             "parent": {"database_id": _reports_db()},
             "properties": properties,
             "children": content_blocks,
         }
-        res = requests.post("https://api.notion.com/v1/pages", headers=_headers(), json=payload, timeout=15)
-
-        # audit_winner 속성이 DB에 없으면 해당 필드 제거 후 재시도
-        if res.status_code != 200 and audit_winner:
-            del payload["properties"]["audit_winner"]
-            res = requests.post("https://api.notion.com/v1/pages", headers=_headers(), json=payload, timeout=15)
+        res = requests.post("https://api.notion.com/v1/pages", headers=_headers(),
+                            json=payload, timeout=15)
+        if res.status_code != 200 and (audit_winner or verdict):
+            for k in ("audit_winner", "verdict"):
+                payload["properties"].pop(k, None)
+            res = requests.post("https://api.notion.com/v1/pages", headers=_headers(),
+                                json=payload, timeout=15)
 
         return (True, "노션 저장 성공") if res.status_code == 200 else (False, f"노션 에러: {res.text[:200]}")
     except Exception as e:
         return False, f"노션 저장 실패: {e}"
+
+
+@st.cache_data(ttl=300)
+def get_all_reports(limit=200):
+    """Notion 리포트 DB 전체 조회 (백테스트용 — 속성만, 블록 미조회)."""
+    try:
+        all_pages, cursor = [], None
+        while len(all_pages) < limit:
+            payload = {
+                "page_size": min(100, limit - len(all_pages)),
+                "sorts": [{"property": "날짜", "direction": "descending"}],
+            }
+            if cursor:
+                payload["start_cursor"] = cursor
+            res  = requests.post(
+                f"https://api.notion.com/v1/databases/{_reports_db()}/query",
+                headers=_headers(), json=payload, timeout=15,
+            )
+            if res.status_code != 200:
+                break
+            data  = res.json()
+            pages = data.get("results", [])
+            all_pages.extend(pages)
+            if not data.get("has_more") or not pages:
+                break
+            cursor = data.get("next_cursor")
+
+        reports = []
+        for page in all_pages:
+            props = page["properties"]
+            tickers = (props.get("종목명") or {}).get("title", [])
+            ticker  = tickers[0]["plain_text"] if tickers else ""
+            if not ticker:
+                continue
+            date_obj = (props.get("날짜") or {}).get("date") or {}
+            date_str = date_obj.get("start", "")
+            if not date_str:
+                continue
+            price   = (props.get("현재가") or {}).get("number") or 0
+            verdict = ((props.get("verdict") or {}).get("rich_text") or [{}])[0].get("plain_text")
+            winner  = ((props.get("audit_winner") or {}).get("rich_text") or [{}])[0].get("plain_text")
+            reports.append({
+                "ticker":  ticker,
+                "date":    date_str,
+                "price":   float(price),
+                "verdict": verdict,
+                "winner":  winner,
+            })
+        return reports
+    except Exception:
+        return []
 
 
 def get_audit_stats(ticker=None):
