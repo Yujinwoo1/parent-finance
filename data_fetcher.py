@@ -9,6 +9,111 @@ from ta.volatility import BollingerBands, AverageTrueRange
 from database import get_recent_report
 
 
+def _calc_canslim_scores(info, df, close_price, week52_high, week52_low, spy_data):
+    """
+    CAN SLIM 7개 팩터 채점.
+    반환: {'C':(score,value,desc), ..., 'total':int, 'grade':str}
+    """
+    f = {}
+
+    # C — Current Quarterly Earnings (분기 EPS YoY 성장률)
+    c_raw = info.get('earningsQuarterlyGrowth') or info.get('earningsGrowth')
+    if c_raw is not None:
+        p = c_raw * 100
+        c_sc  = 15 if p >= 50 else 10 if p >= 25 else 3 if p >= 0 else -8
+        c_val = f"{p:+.0f}% (YoY)"
+    else:
+        c_sc, c_val = 0, "N/A"
+    f['C'] = (c_sc, c_val, "분기 EPS 성장률")
+
+    # A — Annual Earnings / ROE
+    roe = info.get('returnOnEquity')
+    if roe is not None:
+        p = roe * 100
+        a_sc  = 12 if p >= 25 else 8 if p >= 17 else 3 if p >= 10 else -3
+        a_val = f"ROE {p:.1f}%"
+    else:
+        a_sc, a_val = 0, "N/A"
+    f['A'] = (a_sc, a_val, "자기자본이익률(ROE)")
+
+    # N — New High Breakout + Volume
+    latest    = df.iloc[-1]
+    vol_avg_v = df['VOL_AVG20'].iloc[-1] if 'VOL_AVG20' in df.columns else float('nan')
+    vol_r     = latest['Volume'] / float(vol_avg_v) if pd.notna(vol_avg_v) and float(vol_avg_v) > 0 else 1.0
+    pct_hi    = close_price / week52_high * 100
+    if pct_hi >= 98 and vol_r >= 1.4:
+        n_sc = 14; n_val = f"신고가 돌파 (거래량 {vol_r:.1f}×)"
+    elif pct_hi >= 95:
+        n_sc = 5;  n_val = f"신고가 근접 ({pct_hi:.0f}%)"
+    elif pct_hi <= 65:
+        n_sc = -5; n_val = f"저점권 ({pct_hi:.0f}%)"
+    else:
+        n_sc = 0;  n_val = f"중간대 ({pct_hi:.0f}%)"
+    f['N'] = (n_sc, n_val, "신고가 돌파")
+
+    # S — Supply & Demand (20일 상승/하락 거래량 비율)
+    rec20  = df.tail(20)
+    up_vol = rec20[rec20['Close'] >= rec20['Open']]['Volume'].sum()
+    dn_vol = rec20[rec20['Close'] <  rec20['Open']]['Volume'].sum()
+    ud     = up_vol / dn_vol if dn_vol > 0 else 2.0
+    if ud >= 1.5:   s_sc = 10; s_val = f"매수 우위 ({ud:.1f}×)"
+    elif ud >= 1.0: s_sc = 3;  s_val = f"중립 ({ud:.1f}×)"
+    else:           s_sc = -6; s_val = f"매도 우위 ({ud:.1f}×)"
+    f['S'] = (s_sc, s_val, "상승/하락 거래량 비율 (20일)")
+
+    # L — Leader vs Laggard (1년 상대강도 vs SPY)
+    l_sc, l_val = 0, "N/A"
+    if spy_data is not None and not spy_data.empty and len(df) >= 252:
+        try:
+            spy_ret = (spy_data['Close'].iloc[-1] / spy_data['Close'].iloc[0] - 1) * 100
+            stk_ret = (close_price / df['Close'].iloc[-252] - 1) * 100
+            rs      = stk_ret - spy_ret
+            if rs >= 20:    l_sc = 15; l_val = f"RS {rs:+.0f}% (시장 대폭 초과)"
+            elif rs >= 5:   l_sc = 8;  l_val = f"RS {rs:+.0f}% (시장 초과)"
+            elif rs >= -5:  l_sc = 2;  l_val = f"RS {rs:+.0f}% (시장 유사)"
+            else:           l_sc = -8; l_val = f"RS {rs:+.0f}% (시장 미달)"
+        except Exception:
+            pass
+    f['L'] = (l_sc, l_val, "S&P 500 대비 1년 상대강도")
+
+    # I — Institutional Sponsorship
+    inst = info.get('institutionPercentHeld') or info.get('heldPercentInstitutions')
+    if inst is not None:
+        p     = inst * 100
+        i_sc  = 10 if p >= 60 else 6 if p >= 40 else 2 if p >= 20 else -3
+        i_val = f"{p:.0f}%"
+    else:
+        i_sc, i_val = 0, "N/A"
+    f['I'] = (i_sc, i_val, "기관 보유 비율")
+
+    # M — Market Direction (SPY MA 추세)
+    m_sc, m_val = 0, "N/A"
+    if spy_data is not None and not spy_data.empty and len(spy_data) >= 50:
+        try:
+            spy_c    = spy_data['Close'].iloc[-1]
+            spy_ma50 = spy_data['Close'].rolling(50).mean().iloc[-1]
+            spy_ma200 = spy_data['Close'].rolling(200).mean().iloc[-1] if len(spy_data) >= 200 else spy_ma50 * 0.995
+            if spy_c > spy_ma50 > spy_ma200:
+                m_sc = 10; m_val = "강세장 (SPY 정배열)"
+            elif spy_c > spy_ma50:
+                m_sc = 4;  m_val = "중립장 (SPY MA50 위)"
+            elif spy_c < spy_ma50 < spy_ma200:
+                m_sc = -10; m_val = "약세장 (SPY 역배열)"
+            else:
+                m_sc = -3; m_val = "조정 구간"
+        except Exception:
+            pass
+    f['M'] = (m_sc, m_val, "시장 방향성 (SPY 추세)")
+
+    # 총점 정규화: 최악(-43) ~ 최선(+86) → 0~100, 중립 50
+    raw   = sum(v[0] for v in f.values())
+    total = max(0, min(100, int(50 + raw * 0.58)))
+    grade = "GREEN" if total >= 65 else "RED" if total < 35 else "YELLOW"
+    f['total'] = total
+    f['grade'] = grade
+    return f
+
+
 def _get_fear_greed():
     """CNN Fear & Greed Index — 라이브러리 없이 직접 HTTP 요청."""
     try:
@@ -245,6 +350,17 @@ def _fetch_ticker_data(ticker_symbol):
     entry_score = max(0, min(100, score))
     entry_grade = "GREEN" if entry_score >= 65 else "RED" if entry_score < 35 else "YELLOW"
 
+    # --- CAN SLIM ---
+    try:
+        _info = ticker.info or {}
+    except Exception:
+        _info = {}
+    try:
+        _spy = yf.Ticker("SPY").history(period="1y")
+    except Exception:
+        _spy = None
+    canslim = _calc_canslim_scores(_info, df, close_price, week52_high, week52_low, _spy)
+
     return {
         'ticker': ticker_symbol, 'current_price': close_price, 'last_date': last_date_str,
         'ohlcv': f"시가 {latest['Open']:.2f} / 고가 {latest['High']:.2f} / 저가 {latest['Low']:.2f} / 종가 {close_price:.2f} / 거래량 {int(latest['Volume'])}",
@@ -257,6 +373,7 @@ def _fetch_ticker_data(ticker_symbol):
         'stop_loss': stop_loss, 'target1': target1, 'target2': target2,
         'week52': week52, 'options_pcr_multi': options_pcr_multi, 'max_pain': max_pain,
         'oi_heatmap': oi_heatmap,
+        'canslim': canslim, 'canslim_score': canslim['total'],
     }
 
 

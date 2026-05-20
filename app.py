@@ -350,30 +350,50 @@ if submitted:
         entry_color = "#2ECC71" if investment_data['entry_grade'] == "GREEN" \
                  else "#E74C3C" if investment_data['entry_grade'] == "RED" \
                  else "#F39C12"
-        rsi_num   = float(investment_data['rsi'].split('(')[0].strip())
-        rsi_color = "#E74C3C" if rsi_num >= 70 else "#2ECC71" if rsi_num <= 30 else "#3498DB"
+        cs         = investment_data.get('canslim', {})
+        cs_total   = cs.get('total', 50)
+        cs_grade   = cs.get('grade', 'YELLOW')
+        cs_color   = "#2ECC71" if cs_grade == "GREEN" else "#E74C3C" if cs_grade == "RED" else "#F39C12"
+        rsi_num    = float(investment_data['rsi'].split('(')[0].strip())
+        rsi_color  = "#E74C3C" if rsi_num >= 70 else "#2ECC71" if rsi_num <= 30 else "#3498DB"
 
         fig_gauges = make_subplots(
-            rows=1, cols=2,
-            specs=[[{"type": "indicator"}, {"type": "indicator"}]],
-            column_widths=[0.5, 0.5]
+            rows=1, cols=3,
+            specs=[[{"type": "indicator"}, {"type": "indicator"}, {"type": "indicator"}]],
+            column_widths=[0.34, 0.33, 0.33]
         )
         fig_gauges.add_trace(go.Indicator(
             mode="gauge+number",
             value=investment_data['entry_score'],
-            title={"text": "진입 점수"},
+            title={"text": "기술 진입 점수"},
             gauge={
                 "axis": {"range": [0, 100], "tickwidth": 1},
                 "bar":  {"color": entry_color, "thickness": 0.25},
                 "steps": [
-                    {"range": [0, 30],  "color": "#FADBD8"},
-                    {"range": [30, 75], "color": "#FEF9E7"},
-                    {"range": [75, 100],"color": "#D5F5E3"},
+                    {"range": [0, 35],   "color": "#FADBD8"},
+                    {"range": [35, 65],  "color": "#FEF9E7"},
+                    {"range": [65, 100], "color": "#D5F5E3"},
                 ],
                 "threshold": {"line": {"color": "gray", "width": 2},
                               "thickness": 0.75, "value": investment_data['entry_score']},
             }
         ), row=1, col=1)
+        fig_gauges.add_trace(go.Indicator(
+            mode="gauge+number",
+            value=cs_total,
+            title={"text": "CAN SLIM 점수"},
+            gauge={
+                "axis": {"range": [0, 100], "tickwidth": 1},
+                "bar":  {"color": cs_color, "thickness": 0.25},
+                "steps": [
+                    {"range": [0, 35],   "color": "#FADBD8"},
+                    {"range": [35, 65],  "color": "#FEF9E7"},
+                    {"range": [65, 100], "color": "#D5F5E3"},
+                ],
+                "threshold": {"line": {"color": "gray", "width": 2},
+                              "thickness": 0.75, "value": cs_total},
+            }
+        ), row=1, col=2)
         fig_gauges.add_trace(go.Indicator(
             mode="gauge+number",
             value=rsi_num,
@@ -389,10 +409,49 @@ if submitted:
                 "threshold": {"line": {"color": "gray", "width": 2},
                               "thickness": 0.75, "value": rsi_num},
             }
-        ), row=1, col=2)
+        ), row=1, col=3)
         fig_gauges.update_layout(height=220, margin=dict(l=10, r=10, t=10, b=10),
                                   paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig_gauges, use_container_width=True)
+
+        # ── CAN SLIM 점수카드 ──────────────────────────────────────────────
+        if cs and 'C' in cs:
+            _cs_meta = {
+                'C': 'Current EPS (분기 성장)',
+                'A': 'Annual EPS (ROE)',
+                'N': 'New High (신고가)',
+                'S': 'Supply/Demand (수급)',
+                'L': 'Leader (상대강도)',
+                'I': 'Institutional (기관)',
+                'M': 'Market (시장 방향)',
+            }
+            ok_cnt = sum(1 for k in 'CANSLIM' if k in cs and isinstance(cs[k], tuple) and cs[k][0] > 0)
+            with st.expander(
+                f"📈 CAN SLIM 점수카드  — {ok_cnt}/7 충족  |  {cs_total}점 ({cs_grade})",
+                expanded=True
+            ):
+                rows_data = []
+                for k in 'CANSLIM':
+                    if k not in cs or not isinstance(cs[k], tuple):
+                        continue
+                    sc, val, _ = cs[k]
+                    icon = "✅" if sc > 0 else "❌" if sc < 0 else "➖"
+                    rows_data.append({
+                        "팩터":   f"{icon} **{k}**",
+                        "항목":   _cs_meta[k],
+                        "값":     val,
+                        "점수":   f"{sc:+d}",
+                    })
+                import pandas as _pd
+                st.dataframe(
+                    _pd.DataFrame(rows_data),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "팩터": st.column_config.TextColumn(width="small"),
+                        "점수": st.column_config.TextColumn(width="small"),
+                    }
+                )
 
         cur  = investment_data['current_price']
         risk = cur - investment_data['stop_loss']
