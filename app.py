@@ -247,7 +247,9 @@ with st.sidebar:
             # 컴팩트 테이블 스크롤 영역 CSS
             st.markdown("""
                 <style>
-                .fav-scroll { overflow-y: auto; max-height: 400px; }
+                .fav-scroll { overflow-y: scroll; max-height: 180px; scrollbar-width: thin; }
+                .fav-scroll::-webkit-scrollbar { width: 6px; display: block; }
+                .fav-scroll::-webkit-scrollbar-thumb { background: rgba(128,128,128,.5); border-radius: 3px; }
                 .fav-row {
                     display: flex; align-items: center;
                     font-size: 13px; padding: 2px 0;
@@ -302,17 +304,6 @@ with st.sidebar:
 # ---------------------------------------------------------
 st.title("🏛️ AI 투자 위원회 분석 시스템")
 st.markdown("객관적 지표와 행동 심리 분석을 통해 **오늘의 BUY / HOLD / SELL 전략**을 확인하세요.")
-
-# 즐겨찾기 바 — 데스크탑: 최대 6개 가로 배열 / 모바일: CSS로 세로 스택
-_favs_main = get_favorites()
-if _favs_main:
-    st.caption("⭐ 즐겨찾기")
-    _fcols = st.columns(min(len(_favs_main), 6))
-    for _i, _fav in enumerate(_favs_main[:6]):
-        with _fcols[_i]:
-            if st.button(_fav, key=f"mfav_{_fav}", use_container_width=True):
-                st.session_state["ticker_input"] = _fav
-                st.rerun()
 
 st.divider()
 
