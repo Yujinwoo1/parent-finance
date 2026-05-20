@@ -169,51 +169,81 @@ def _fetch_ticker_data(ticker_symbol):
     target2   = round(close_price + atr_v * 3.5, 2)
 
     # --- Entry Score (0–100) ---
+    # 각 지표를 독립적으로 채점해 합산 → 50점 고착 방지
     score = 50
     rsi_f = float(rsi_val) if pd.notna(rsi_val) else 50.0
 
-    if rsi_f < 30:    score += 14
+    # RSI (과매도↑ / 과매수↓) — 세분화
+    if   rsi_f < 25:  score += 20
+    elif rsi_f < 30:  score += 15
     elif rsi_f < 40:  score += 8
-    if rsi_f > 70:    score -= 10
+    elif rsi_f < 50:  score += 3
+    elif rsi_f < 60:  score += 0
+    elif rsi_f < 70:  score -= 5
+    elif rsi_f < 80:  score -= 12
+    else:             score -= 18
 
+    # 볼린저 밴드 — 하단 근접 시 단계별 가산
     bb_lower_v = latest.get('BB_lower', float('nan'))
-    if pd.notna(bb_lower_v) and close_price <= float(bb_lower_v):
-        score += 10
+    if pd.notna(bb_lower_v):
+        bb_l = float(bb_lower_v)
+        if   close_price <= bb_l:              score += 12  # 하단 터치
+        elif close_price <= bb_l * 1.015:      score += 6   # 하단 1.5% 이내
 
-    ma50_v    = latest.get('MA50',       float('nan'))
-    ma200_v   = latest.get('MA200',      float('nan'))
-    vol_avg   = latest.get('VOL_AVG20',  float('nan'))
-    atr_cur   = latest.get('ATR',        float('nan'))
-    atr_avg20 = latest.get('ATR_AVG20',  float('nan'))
+    # MA 정배열 / 역배열 — 독립 채점
+    ma50_v  = latest.get('MA50',  float('nan'))
+    ma200_v = latest.get('MA200', float('nan'))
+    if pd.notna(ma50_v) and pd.notna(ma200_v):
+        ma50, ma200 = float(ma50_v), float(ma200_v)
+        if   close_price > ma50 > ma200:   score += 10   # 완전 정배열
+        elif close_price > ma50:           score += 4    # MA50 위
+        elif close_price < ma50 < ma200:   score -= 10   # 완전 역배열
+        else:                              score -= 4    # MA50 아래
 
-    ma_aligned = pd.notna(ma50_v) and pd.notna(ma200_v) and close_price > float(ma50_v) > float(ma200_v)
-    vol_surge  = pd.notna(vol_avg) and latest['Volume'] >= 2 * float(vol_avg)
-    bullish    = close_price > latest['Open']
-
-    if ma_aligned and vol_surge and bullish:
-        score += 14
-    if ma_aligned and pd.notna(atr_cur) and pd.notna(atr_avg20) and float(atr_cur) < float(atr_avg20):
-        score += 6
-    if pd.notna(vol_avg) and close_price >= week52_high and latest['Volume'] >= float(vol_avg) * 1.5:
-        score += 10
-
+    # MACD
     macd_c = latest.get('MACD_line',        float('nan'))
     sig_c  = latest.get('MACD_signal_line', float('nan'))
     macd_p = prev.get('MACD_line',          float('nan'))
     sig_p  = prev.get('MACD_signal_line',   float('nan'))
     if all(pd.notna(v) for v in [macd_c, sig_c, macd_p, sig_p]):
-        just_crossed = float(macd_c) >= float(sig_c) and float(macd_p) < float(sig_p)
-        gap = float(sig_c) - float(macd_c)
-        imminent = float(macd_c) < float(sig_c) and 0 < gap < abs(close_price * 0.003) and float(macd_c) > float(macd_p)
-        if just_crossed or imminent:
-            score += 6
+        mc, sc, mp, sp = float(macd_c), float(sig_c), float(macd_p), float(sig_p)
+        just_crossed = mc >= sc and mp < sp
+        gap          = sc - mc
+        imminent     = mc < sc and 0 < gap < abs(close_price * 0.003) and mc > mp
+        if just_crossed or imminent:  score += 8
+        elif mc > sc:                 score += 3
+        else:                         score -= 3
 
+    # 거래량 (1.3× 이상이면 관심, 2× 이상이면 강세)
+    vol_avg = latest.get('VOL_AVG20', float('nan'))
+    if pd.notna(vol_avg) and float(vol_avg) > 0:
+        vol_ratio = latest['Volume'] / float(vol_avg)
+        if   vol_ratio >= 2.0:  score += 6
+        elif vol_ratio >= 1.3:  score += 3
+
+    # 52주 위치 — 저점 근처 가산 / 고점 소폭 감산
+    week52_low = float(df['Close'].tail(252).min())
+    w52_range  = week52_high - week52_low
+    if w52_range > 0:
+        w52_pct = (close_price - week52_low) / w52_range * 100
+        if   w52_pct <= 15:  score += 8   # 52주 저점 근처
+        elif w52_pct <= 30:  score += 4
+        elif w52_pct >= 90:  score -= 5   # 52주 고점 근처 (저항 우려)
+
+    # ATR 저변동 (MA 정배열 시 추가 안정성)
+    atr_cur   = latest.get('ATR',       float('nan'))
+    atr_avg20 = latest.get('ATR_AVG20', float('nan'))
+    ma_aligned = pd.notna(ma50_v) and pd.notna(ma200_v) and close_price > float(ma50_v) > float(ma200_v)
+    if ma_aligned and pd.notna(atr_cur) and pd.notna(atr_avg20) and float(atr_cur) < float(atr_avg20):
+        score += 5
+
+    # 갭 상승 패널티 (5% 이상 갭업 → 추격매수 위험)
     prev_close = float(prev['Close'])
     if prev_close > 0 and (close_price - prev_close) / prev_close >= 0.05:
-        score -= 10
+        score -= 8
 
     entry_score = max(0, min(100, score))
-    entry_grade = "GREEN" if entry_score >= 75 else "RED" if entry_score < 30 else "YELLOW"
+    entry_grade = "GREEN" if entry_score >= 65 else "RED" if entry_score < 35 else "YELLOW"
 
     return {
         'ticker': ticker_symbol, 'current_price': close_price, 'last_date': last_date_str,
