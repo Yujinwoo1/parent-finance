@@ -161,6 +161,7 @@ def _fetch_ticker_data(ticker_symbol):
     df['ATR_AVG20'] = df['ATR'].rolling(20).mean()
     bb              = BollingerBands(close=df['Close'], window=20, window_dev=2)
     df['BB_lower']  = bb.bollinger_lband()
+    df['BB_upper']  = bb.bollinger_hband()
 
     # --- MACD ---
     macd_ind               = MACDIndicator(close=df['Close'])
@@ -274,11 +275,10 @@ def _fetch_ticker_data(ticker_symbol):
     target2   = round(close_price + atr_v * 3.5, 2)
 
     # --- Entry Score (0–100) ---
-    # 각 지표를 독립적으로 채점해 합산 → 50점 고착 방지
     score = 50
     rsi_f = float(rsi_val) if pd.notna(rsi_val) else 50.0
 
-    # RSI (과매도↑ / 과매수↓) — 세분화
+    # RSI — 8단계 (과매도↑ / 과매수↓)
     if   rsi_f < 25:  score += 20
     elif rsi_f < 30:  score += 15
     elif rsi_f < 40:  score += 8
@@ -288,64 +288,83 @@ def _fetch_ticker_data(ticker_symbol):
     elif rsi_f < 80:  score -= 12
     else:             score -= 18
 
-    # 볼린저 밴드 — 하단 근접 시 단계별 가산
+    # 볼린저 밴드 — 하단 가산 + 상단 감산
     bb_lower_v = latest.get('BB_lower', float('nan'))
-    if pd.notna(bb_lower_v):
-        bb_l = float(bb_lower_v)
-        if   close_price <= bb_l:              score += 12  # 하단 터치
-        elif close_price <= bb_l * 1.015:      score += 6   # 하단 1.5% 이내
+    bb_upper_v = latest.get('BB_upper', float('nan'))
+    if pd.notna(bb_lower_v) and pd.notna(bb_upper_v):
+        bb_l, bb_h = float(bb_lower_v), float(bb_upper_v)
+        if   close_price <= bb_l:         score += 12
+        elif close_price <= bb_l * 1.015: score += 6
+        elif close_price >= bb_h:         score -= 8
+        elif close_price >= bb_h * 0.99:  score -= 4
 
-    # MA 정배열 / 역배열 — 독립 채점
+    # MA 정배열/역배열 — 확장 범위 (+15 / -18)
     ma50_v  = latest.get('MA50',  float('nan'))
     ma200_v = latest.get('MA200', float('nan'))
+    ma_full_up = False
+    ma_full_dn = False
     if pd.notna(ma50_v) and pd.notna(ma200_v):
         ma50, ma200 = float(ma50_v), float(ma200_v)
-        if   close_price > ma50 > ma200:   score += 10   # 완전 정배열
-        elif close_price > ma50:           score += 4    # MA50 위
-        elif close_price < ma50 < ma200:   score -= 10   # 완전 역배열
-        else:                              score -= 4    # MA50 아래
+        if   close_price > ma50 > ma200:  score += 15; ma_full_up = True
+        elif close_price > ma50:          score += 6
+        elif close_price < ma50 < ma200:  score -= 18; ma_full_dn = True
+        else:                             score -= 6
 
-    # MACD
+    # MACD — 골든크로스 +10 / 네거티브 -6
     macd_c = latest.get('MACD_line',        float('nan'))
     sig_c  = latest.get('MACD_signal_line', float('nan'))
     macd_p = prev.get('MACD_line',          float('nan'))
     sig_p  = prev.get('MACD_signal_line',   float('nan'))
+    macd_above = False
+    macd_just_crossed = False
     if all(pd.notna(v) for v in [macd_c, sig_c, macd_p, sig_p]):
-        mc, sc, mp, sp = float(macd_c), float(sig_c), float(macd_p), float(sig_p)
-        just_crossed = mc >= sc and mp < sp
-        gap          = sc - mc
-        imminent     = mc < sc and 0 < gap < abs(close_price * 0.003) and mc > mp
-        if just_crossed or imminent:  score += 8
-        elif mc > sc:                 score += 3
-        else:                         score -= 3
+        mc, sc_v, mp, sp = float(macd_c), float(sig_c), float(macd_p), float(sig_p)
+        macd_just_crossed = mc >= sc_v and mp < sp
+        gap_macd  = sc_v - mc
+        imminent  = mc < sc_v and 0 < gap_macd < abs(close_price * 0.003) and mc > mp
+        macd_above = mc > sc_v
+        if macd_just_crossed:   score += 10
+        elif imminent:          score += 8
+        elif macd_above:        score += 5
+        else:                   score -= 6
+        # 데드크로스 구간의 MACD 반등은 품질 할인
+        if ma_full_dn and macd_just_crossed:
+            score -= 6
 
-    # 거래량 (1.3× 이상이면 관심, 2× 이상이면 강세)
+    # 거래량 — 1.5× 중간 티어 추가
     vol_avg = latest.get('VOL_AVG20', float('nan'))
     if pd.notna(vol_avg) and float(vol_avg) > 0:
         vol_ratio = latest['Volume'] / float(vol_avg)
-        if   vol_ratio >= 2.0:  score += 6
+        if   vol_ratio >= 2.0:  score += 8
+        elif vol_ratio >= 1.5:  score += 5
         elif vol_ratio >= 1.3:  score += 3
 
-    # 52주 위치 — 저점 근처 가산 / 고점 소폭 감산
-    week52_low = float(df['Close'].tail(252).min())
-    w52_range  = week52_high - week52_low
-    if w52_range > 0:
-        w52_pct = (close_price - week52_low) / w52_range * 100
-        if   w52_pct <= 15:  score += 8   # 52주 저점 근처
-        elif w52_pct <= 30:  score += 4
-        elif w52_pct >= 90:  score -= 5   # 52주 고점 근처 (저항 우려)
+    # 52주 위치 — 저점 가산 강화 / 고점 감산 강화
+    week52_low_cur = float(df['Close'].tail(252).min())
+    w52_range_cur  = week52_high - week52_low_cur
+    w52_pct = (close_price - week52_low_cur) / w52_range_cur * 100 if w52_range_cur > 0 else 50.0
+    if   w52_pct <= 15:  score += 10
+    elif w52_pct <= 30:  score += 5
+    elif w52_pct >= 90:  score -= 8
 
-    # ATR 저변동 (MA 정배열 시 추가 안정성)
+    # ATR 저변동 안정성 보너스
     atr_cur   = latest.get('ATR',       float('nan'))
     atr_avg20 = latest.get('ATR_AVG20', float('nan'))
-    ma_aligned = pd.notna(ma50_v) and pd.notna(ma200_v) and close_price > float(ma50_v) > float(ma200_v)
-    if ma_aligned and pd.notna(atr_cur) and pd.notna(atr_avg20) and float(atr_cur) < float(atr_avg20):
+    if ma_full_up and pd.notna(atr_cur) and pd.notna(atr_avg20) and float(atr_cur) < float(atr_avg20):
         score += 5
 
-    # 갭 상승 패널티 (5% 이상 갭업 → 추격매수 위험)
+    # 갭 상승 패널티 (5% 이상 갭업)
     prev_close = float(prev['Close'])
     if prev_close > 0 and (close_price - prev_close) / prev_close >= 0.05:
         score -= 8
+
+    # 콤보 보너스 / 패널티
+    if rsi_f <= 35 and pd.notna(bb_lower_v) and close_price <= float(bb_lower_v) * 1.015:
+        score += 8   # 강한 과매도 시그널 (RSI + BB 동시)
+    if rsi_f >= 70 and w52_pct >= 90:
+        score -= 8   # 이중 과열 (RSI 과매수 + 52주 고점)
+    if ma_full_up and macd_above and not macd_just_crossed and rsi_f < 65:
+        score += 5   # 추세 품질 보너스 (정배열+MACD+비과열)
 
     entry_score = max(0, min(100, score))
     entry_grade = "GREEN" if entry_score >= 65 else "RED" if entry_score < 35 else "YELLOW"

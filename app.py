@@ -152,12 +152,18 @@ with st.sidebar:
 
     # --- 즐겨찾기 토글 ---
     with st.expander("⭐ 즐겨찾기", expanded=True):
-        # 종목 추가 검색창
-        new_ticker = st.text_input(
-            "티커 추가", placeholder="TSLA, AAPL...",
-            key="_fav_add_input", label_visibility="collapsed"
-        )
-        if st.button("+ 추가", key="_fav_add_btn", use_container_width=True):
+        # 엔터/버튼 모두 추가 가능한 미니 폼
+        with st.form("_fav_add_form", clear_on_submit=True):
+            _fav_cols = st.columns([4, 1])
+            with _fav_cols[0]:
+                new_ticker = st.text_input(
+                    "티커 추가", placeholder="TSLA…",
+                    label_visibility="collapsed"
+                )
+            with _fav_cols[1]:
+                submitted_fav = st.form_submit_button("＋", use_container_width=True)
+
+        if submitted_fav:
             sym = new_ticker.strip().upper()
             if sym:
                 with st.spinner(f"{sym} 확인 중..."):
@@ -172,14 +178,14 @@ with st.sidebar:
                     except Exception:
                         st.error(f"존재하지 않는 티커: {sym}")
 
-        st.divider()
-
         # 즐겨찾기 목록 + 신호 스캔
         favorites = get_favorites()
         if not favorites:
             st.caption("아직 추가된 종목이 없습니다.")
         else:
             fav_scan = []
+            green_cnt = yellow_cnt = red_cnt = 0
+            rows = []   # (icon, fav, score, price, grade, rsi, stop, target)
             for fav in favorites:
                 try:
                     td    = _fetch_ticker_data(fav)
@@ -188,31 +194,59 @@ with st.sidebar:
                     price = td['current_price']
                     rsi_v = float(td['rsi'].split('(')[0].strip())
                     icon  = '🟢' if grade == 'GREEN' else '🔴' if grade == 'RED' else '🟡'
+                    if grade == 'GREEN':   green_cnt  += 1
+                    elif grade == 'RED':   red_cnt    += 1
+                    else:                  yellow_cnt += 1
                     fav_scan.append({
                         'ticker': fav, 'price': price, 'entry_score': score,
                         'entry_grade': grade, 'rsi': rsi_v,
                         'stop_loss': td['stop_loss'], 'target1': td['target1'],
                     })
-                    c1, c2 = st.columns([5, 1])
-                    with c1:
-                        if st.button(
-                            f"{icon} {fav}  {score}점  ${price:.1f}",
-                            key=f"fav_{fav}", use_container_width=True
-                        ):
-                            st.session_state['ticker_input'] = fav
-                            st.rerun()
-                    with c2:
-                        if st.button("✕", key=f"del_{fav}"):
-                            remove_favorite(fav)
-                            st.rerun()
+                    rows.append((icon, fav, score, price, grade))
                 except Exception:
-                    c1, c2 = st.columns([5, 1])
-                    with c1:
-                        st.caption(f"⚪ {fav} (로드 실패)")
-                    with c2:
-                        if st.button("✕", key=f"del_{fav}"):
-                            remove_favorite(fav)
-                            st.rerun()
+                    rows.append(('⚪', fav, None, None, None))
+
+            total_favs = len(favorites)
+            st.markdown(
+                f"<div style='font-size:12px;color:gray;margin-bottom:4px'>"
+                f"총 {total_favs}종목 &nbsp;🟢 {green_cnt} &nbsp;🟡 {yellow_cnt} &nbsp;🔴 {red_cnt}"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+
+            # 컴팩트 테이블 스크롤 영역 CSS
+            st.markdown("""
+                <style>
+                .fav-scroll { overflow-y: auto; max-height: 400px; }
+                .fav-row {
+                    display: flex; align-items: center;
+                    font-size: 13px; padding: 2px 0;
+                    border-bottom: 1px solid rgba(128,128,128,.15);
+                }
+                .fav-icon  { width: 20px; flex-shrink: 0; }
+                .fav-name  { flex: 1; font-weight: 600; }
+                .fav-score { width: 36px; text-align: right; color: gray; }
+                .fav-price { width: 52px; text-align: right; }
+                </style>
+                <div class="fav-scroll" id="fav-scroll-area">
+            """, unsafe_allow_html=True)
+            # close the HTML div after all buttons (buttons can't be inside HTML div)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            for icon, fav, score, price, grade in rows:
+                c1, c2 = st.columns([5, 1])
+                with c1:
+                    label = (
+                        f"{icon} {fav:<6s}  {score}pt  ${price:.1f}"
+                        if score is not None else f"⚪ {fav} (로드 실패)"
+                    )
+                    if st.button(label, key=f"fav_{fav}", use_container_width=True):
+                        st.session_state['ticker_input'] = fav
+                        st.rerun()
+                with c2:
+                    if st.button("✕", key=f"del_{fav}"):
+                        remove_favorite(fav)
+                        st.rerun()
 
             if fav_scan:
                 check_and_notify_favorites(fav_scan)
