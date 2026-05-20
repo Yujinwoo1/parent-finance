@@ -1,12 +1,14 @@
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
-from database import (init_db, save_to_sqlite, save_to_notion,
-                      save_favorite, get_favorites, remove_favorite, get_audit_stats)
-from data_fetcher import prepare_investment_data
+from database import (save_to_notion, add_favorite, get_favorites, remove_favorite, get_audit_stats)
+from data_fetcher import prepare_investment_data, _fetch_ticker_data
 from ai_generator import generate_investment_report
+from notifier import check_and_notify_favorites
 
 # ---------------------------------------------------------
 # 1. 페이지 설정 및 스타일
@@ -114,8 +116,6 @@ st.markdown("""
 # ---------------------------------------------------------
 # 2. 초기화
 # ---------------------------------------------------------
-init_db()
-
 def parse_audit_winner(report_text):
     """AI 리포트 감사 섹션에서 승자(A / B / 무승부)를 추출."""
     try:
@@ -137,23 +137,85 @@ if 'ticker_input' not in st.session_state:
     st.session_state['ticker_input'] = 'TSLA'
 
 # ---------------------------------------------------------
-# 3. 사이드바: 즐겨찾기 + 예측 적중률
+# 3. 사이드바: 장 상태 + 즐겨찾기 신호 스캔 + 예측 적중률
 # ---------------------------------------------------------
 with st.sidebar:
-    st.markdown("### ⭐ 즐겨찾기")
-    favorites = get_favorites()
-    if not favorites:
-        st.caption("분석 후 종목을 추가해보세요.")
-    for fav in favorites:
-        c1, c2 = st.columns([5, 1])
-        with c1:
-            if st.button(fav, key=f"fav_{fav}", use_container_width=True):
-                st.session_state['ticker_input'] = fav
-                st.rerun()
-        with c2:
-            if st.button("✕", key=f"del_{fav}"):
-                remove_favorite(fav)
-                st.rerun()
+    # --- 미국 동부시간 기준 장 중 여부 ---
+    et_now   = datetime.now(ZoneInfo("America/New_York"))
+    et_min   = et_now.hour * 60 + et_now.minute
+    is_open  = et_now.weekday() < 5 and 570 <= et_min < 960  # 9:30~16:00
+    st.markdown(
+        f"{'**🕐 장 중**' if is_open else '**🌙 장 마감**'}"
+        f"  ·  ET {et_now.strftime('%m/%d %H:%M')}"
+    )
+    st.divider()
+
+    # --- 즐겨찾기 토글 ---
+    with st.expander("⭐ 즐겨찾기", expanded=True):
+        # 종목 추가 검색창
+        new_ticker = st.text_input(
+            "티커 추가", placeholder="TSLA, AAPL...",
+            key="_fav_add_input", label_visibility="collapsed"
+        )
+        if st.button("+ 추가", key="_fav_add_btn", use_container_width=True):
+            sym = new_ticker.strip().upper()
+            if sym:
+                with st.spinner(f"{sym} 확인 중..."):
+                    try:
+                        import yfinance as yf
+                        info = yf.Ticker(sym).fast_info
+                        if not info.last_price:
+                            raise ValueError("가격 없음")
+                        add_favorite(sym)
+                        st.success(f"{sym} 추가됨")
+                        st.rerun()
+                    except Exception:
+                        st.error(f"존재하지 않는 티커: {sym}")
+
+        st.divider()
+
+        # 즐겨찾기 목록 + 신호 스캔
+        favorites = get_favorites()
+        if not favorites:
+            st.caption("아직 추가된 종목이 없습니다.")
+        else:
+            fav_scan = []
+            for fav in favorites:
+                try:
+                    td    = _fetch_ticker_data(fav)
+                    score = td['entry_score']
+                    grade = td['entry_grade']
+                    price = td['current_price']
+                    rsi_v = float(td['rsi'].split('(')[0].strip())
+                    icon  = '🟢' if grade == 'GREEN' else '🔴' if grade == 'RED' else '🟡'
+                    fav_scan.append({
+                        'ticker': fav, 'price': price, 'entry_score': score,
+                        'entry_grade': grade, 'rsi': rsi_v,
+                        'stop_loss': td['stop_loss'], 'target1': td['target1'],
+                    })
+                    c1, c2 = st.columns([5, 1])
+                    with c1:
+                        if st.button(
+                            f"{icon} {fav}  {score}점  ${price:.1f}",
+                            key=f"fav_{fav}", use_container_width=True
+                        ):
+                            st.session_state['ticker_input'] = fav
+                            st.rerun()
+                    with c2:
+                        if st.button("✕", key=f"del_{fav}"):
+                            remove_favorite(fav)
+                            st.rerun()
+                except Exception:
+                    c1, c2 = st.columns([5, 1])
+                    with c1:
+                        st.caption(f"⚪ {fav} (로드 실패)")
+                    with c2:
+                        if st.button("✕", key=f"del_{fav}"):
+                            remove_favorite(fav)
+                            st.rerun()
+
+            if fav_scan:
+                check_and_notify_favorites(fav_scan)
 
     st.divider()
     st.markdown("### 📊 예측 적중률")
@@ -265,12 +327,9 @@ if submitted:
             final_report    = generate_investment_report(investment_data)
             audit_winner    = parse_audit_winner(final_report)
 
-            save_to_sqlite(TARGET_TICKER, investment_data['current_price'],
-                           vix_input, fg_input, position, action_plan, psycho_state,
-                           final_report, audit_winner)
             notion_success, notion_msg = save_to_notion(
                 TARGET_TICKER, investment_data['current_price'],
-                vix_input, fg_input, psycho_state, action_plan, final_report
+                vix_input, fg_input, psycho_state, action_plan, final_report, audit_winner
             )
 
         st.success("분석이 완료되었습니다!")
@@ -282,7 +341,7 @@ if submitted:
         current_favs = get_favorites()
         if TARGET_TICKER not in current_favs:
             if st.button(f"⭐ {TARGET_TICKER} 즐겨찾기에 추가", use_container_width=False):
-                save_favorite(TARGET_TICKER)
+                add_favorite(TARGET_TICKER)
                 st.rerun()
 
         # ── 빠른 진단 — 게이지 + R/R 메트릭 (항상 전체 너비) ──────────
