@@ -244,41 +244,21 @@ with st.sidebar:
                 unsafe_allow_html=True
             )
 
-            # 컴팩트 테이블 스크롤 영역 CSS
-            st.markdown("""
-                <style>
-                .fav-scroll { overflow-y: scroll; max-height: 180px; scrollbar-width: thin; }
-                .fav-scroll::-webkit-scrollbar { width: 6px; display: block; }
-                .fav-scroll::-webkit-scrollbar-thumb { background: rgba(128,128,128,.5); border-radius: 3px; }
-                .fav-row {
-                    display: flex; align-items: center;
-                    font-size: 13px; padding: 2px 0;
-                    border-bottom: 1px solid rgba(128,128,128,.15);
-                }
-                .fav-icon  { width: 20px; flex-shrink: 0; }
-                .fav-name  { flex: 1; font-weight: 600; }
-                .fav-score { width: 36px; text-align: right; color: gray; }
-                .fav-price { width: 52px; text-align: right; }
-                </style>
-                <div class="fav-scroll" id="fav-scroll-area">
-            """, unsafe_allow_html=True)
-            # close the HTML div after all buttons (buttons can't be inside HTML div)
-            st.markdown("</div>", unsafe_allow_html=True)
-
-            for icon, fav, score, price, grade in rows:
-                c1, c2 = st.columns([5, 1])
-                with c1:
-                    label = (
-                        f"{icon} {fav:<6s}  {score}pt  ${price:.1f}"
-                        if score is not None else f"⚪ {fav} (로드 실패)"
-                    )
-                    if st.button(label, key=f"fav_{fav}", use_container_width=True):
-                        st.session_state['ticker_input'] = fav
-                        st.rerun()
-                with c2:
-                    if st.button("✕", key=f"del_{fav}"):
-                        remove_favorite(fav)
-                        st.rerun()
+            with st.container(height=180, border=False):
+                for icon, fav, score, price, grade in rows:
+                    c1, c2 = st.columns([5, 1])
+                    with c1:
+                        label = (
+                            f"{icon} {fav:<6s}  {score}pt  ${price:.1f}"
+                            if score is not None else f"⚪ {fav} (로드 실패)"
+                        )
+                        if st.button(label, key=f"fav_{fav}", use_container_width=True):
+                            st.session_state['ticker_input'] = fav
+                            st.rerun()
+                    with c2:
+                        if st.button("✕", key=f"del_{fav}"):
+                            remove_favorite(fav)
+                            st.rerun()
 
             if fav_scan:
                 check_and_notify_favorites(fav_scan)
