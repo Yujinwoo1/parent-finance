@@ -10,7 +10,8 @@ from database import (save_to_notion, add_favorite, get_favorites, remove_favori
                       get_audit_stats, get_all_reports)
 from data_fetcher import (prepare_investment_data, _fetch_ticker_data,
                           get_sp500_tickers, get_ndx100_tickers,
-                          scan_ticker_batch, get_price_on_or_after)
+                          scan_ticker_batch, get_price_on_or_after,
+                          get_ticker_history_cached, get_price_on_or_after_local)
 from ai_generator import generate_investment_report
 from notifier import check_and_notify_favorites
 
@@ -163,8 +164,8 @@ def parse_audit_winner(report_text):
         pass
     return None
 
-if 'ticker_input' not in st.session_state:
-    st.session_state['ticker_input'] = 'TSLA'
+if 'active_ticker' not in st.session_state:
+    st.session_state['active_ticker'] = 'TSLA'
 
 # ---------------------------------------------------------
 # 3. 사이드바: 장 상태 + 즐겨찾기 신호 스캔 + 예측 적중률
@@ -203,7 +204,7 @@ with st.sidebar:
                         if not info.last_price:
                             raise ValueError("가격 없음")
                         add_favorite(sym)
-                        st.success(f"{sym} 추가됨")
+                        st.toast(f"⭐ {sym} 즐겨찾기 추가 완료!")
                         st.rerun()
                     except Exception:
                         st.error(f"존재하지 않는 티커: {sym}")
@@ -253,11 +254,12 @@ with st.sidebar:
                             if score is not None else f"⚪ {fav} (로드 실패)"
                         )
                         if st.button(label, key=f"fav_{fav}", use_container_width=True):
-                            st.session_state['ticker_input'] = fav
+                            st.session_state['active_ticker'] = fav
                             st.rerun()
                     with c2:
                         if st.button("✕", key=f"del_{fav}"):
                             remove_favorite(fav)
+                            st.toast(f"✕ {fav} 즐겨찾기 삭제 완료")
                             st.rerun()
 
             if fav_scan:
@@ -311,7 +313,7 @@ with tab_main:
     with st.form("analysis_form"):
         TARGET_TICKER = st.text_input(
             "▶️ 분석할 기업의 티커 (예: TSLA, AAPL)",
-            key="ticker_input"
+            value=st.session_state['active_ticker']
         )
         form_left, form_right = st.columns(2)
         with form_left:
@@ -362,6 +364,7 @@ with tab_main:
     # ---------------------------------------------------------
     if submitted:
         TARGET_TICKER = TARGET_TICKER.strip().upper() if TARGET_TICKER else "TSLA"
+        st.session_state['active_ticker'] = TARGET_TICKER
 
         if "보유 중" in position:
             MY_CONTEXT = f"현재 주식을 보유 중(평단가: ${avg_price:.2f}, 비중: {weight}%)입니다. \n나의 오늘 매매 계획은 '{action_plan}' 입니다."
@@ -384,9 +387,12 @@ with tab_main:
                 audit_winner    = parse_audit_winner(final_report)
                 verdict         = parse_verdict(final_report)
 
+                notion_vix = vix_input if vix_input > 0 else investment_data.get("vix_raw", 0.0)
+                notion_fg = fg_input if fg_input > 0 else investment_data.get("cnn_fg_raw", 0.0)
+
                 notion_success, notion_msg = save_to_notion(
                     TARGET_TICKER, investment_data["current_price"],
-                    vix_input, fg_input, psycho_state, action_plan,
+                    notion_vix, notion_fg, psycho_state, action_plan,
                     final_report, audit_winner, verdict,
                 )
 
@@ -546,10 +552,16 @@ with tab_backtest:
         buy_correct = buy_total = sell_correct = sell_total = 0
         table_rows = []
 
+        # 고유 티커별로 2년 주가 이력을 1회 사전 수집하여 캐싱
+        unique_tickers = set(r["ticker"] for r in scored)
+        with st.spinner("백테스트를 위한 시장 데이터를 수집 중입니다..."):
+            ticker_histories = {t: get_ticker_history_cached(t) for t in unique_tickers}
+
         for r in scored:
-            p10 = get_price_on_or_after(r["ticker"], r["date"], 10)
-            p30 = get_price_on_or_after(r["ticker"], r["date"], 30)
-            p60 = get_price_on_or_after(r["ticker"], r["date"], 60)
+            hist = ticker_histories.get(r["ticker"])
+            p10 = get_price_on_or_after_local(hist, r["date"], 10)
+            p30 = get_price_on_or_after_local(hist, r["date"], 30)
+            p60 = get_price_on_or_after_local(hist, r["date"], 60)
             base = r["price"]
 
             def _pct(fut):
@@ -675,24 +687,78 @@ with tab_scanner:
             f"🟢 GREEN {len(green)}  🟡 YELLOW {len(yellow)}  🔴 RED {len(red)}  |  {heat_label}"
         )
 
-        if green:
-            st.markdown("#### 🟢 GREEN 종목 (진입 점수 높은 순)")
-            import pandas as _pd
-            green_df = _pd.DataFrame([{
-                "티커":    r["ticker"],
-                "점수":    r["entry_score"],
-                "현재가":  f"${r['price']:.2f}",
-                "RSI":     r["rsi"],
-                "52W위치": f"{r['w52_pct']:.0f}%",
-            } for r in green])
-            st.dataframe(green_df, use_container_width=True, hide_index=True)
+        scan_tab_green, scan_tab_yellow, scan_tab_red = st.tabs([
+            f"🟢 GREEN ({len(green)})", 
+            f"🟡 YELLOW ({len(yellow)})", 
+            f"🔴 RED ({len(red)})"
+        ])
 
-            st.caption("티커를 클릭 후 아래에서 분석 탭으로 이동하세요.")
-            _gcols = st.columns(min(len(green), 8))
-            for _gi, _gr in enumerate(green[:8]):
-                with _gcols[_gi]:
-                    if st.button(_gr["ticker"], key=f"scan_{_gr['ticker']}"):
-                        st.session_state["ticker_input"] = _gr["ticker"]
-                        st.rerun()
+        import pandas as _pd
+
+        with scan_tab_green:
+            if green:
+                green_df = _pd.DataFrame([{
+                    "티커":    r["ticker"],
+                    "점수":    r["entry_score"],
+                    "현재가":  f"${r['price']:.2f}",
+                    "RSI":     r["rsi"],
+                    "52W위치": f"{r['w52_pct']:.0f}%",
+                } for r in green])
+                st.dataframe(green_df, use_container_width=True, hide_index=True)
+
+                st.caption("티커를 클릭하면 즉시 AI 분석 대상(active_ticker)으로 설정되고 분석이 준비됩니다.")
+                _gcols = st.columns(min(len(green), 8))
+                for _gi, _gr in enumerate(green[:8]):
+                    with _gcols[_gi]:
+                        if st.button(_gr["ticker"], key=f"scan_green_{_gr['ticker']}", use_container_width=True):
+                            st.session_state["active_ticker"] = _gr["ticker"]
+                            st.toast(f"🎯 분석 대상을 {_gr['ticker']}로 설정했습니다! AI 분석 탭을 확인하세요.")
+                            st.rerun()
+            else:
+                st.info("GREEN 등급 종목이 없습니다.")
+
+        with scan_tab_yellow:
+            if yellow:
+                yellow_df = _pd.DataFrame([{
+                    "티커":    r["ticker"],
+                    "점수":    r["entry_score"],
+                    "현재가":  f"${r['price']:.2f}",
+                    "RSI":     r["rsi"],
+                    "52W위치": f"{r['w52_pct']:.0f}%",
+                } for r in yellow])
+                st.dataframe(yellow_df, use_container_width=True, hide_index=True)
+
+                st.caption("티커를 클릭하면 즉시 AI 분석 대상(active_ticker)으로 설정되고 분석이 준비됩니다.")
+                _ycols = st.columns(min(len(yellow), 8))
+                for _yi, _yr in enumerate(yellow[:8]):
+                    with _ycols[_yi]:
+                        if st.button(_yr["ticker"], key=f"scan_yellow_{_yr['ticker']}", use_container_width=True):
+                            st.session_state["active_ticker"] = _yr["ticker"]
+                            st.toast(f"🎯 분석 대상을 {_yr['ticker']}로 설정했습니다! AI 분석 탭을 확인하세요.")
+                            st.rerun()
+            else:
+                st.info("YELLOW 등급 종목이 없습니다.")
+
+        with scan_tab_red:
+            if red:
+                red_df = _pd.DataFrame([{
+                    "티커":    r["ticker"],
+                    "점수":    r["entry_score"],
+                    "현재가":  f"${r['price']:.2f}",
+                    "RSI":     r["rsi"],
+                    "52W위치": f"{r['w52_pct']:.0f}%",
+                } for r in red])
+                st.dataframe(red_df, use_container_width=True, hide_index=True)
+
+                st.caption("티커를 클릭하면 즉시 AI 분석 대상(active_ticker)으로 설정되고 분석이 준비됩니다.")
+                _rcols = st.columns(min(len(red), 8))
+                for _ri, _rr in enumerate(red[:8]):
+                    with _rcols[_ri]:
+                        if st.button(_rr["ticker"], key=f"scan_red_{_rr['ticker']}", use_container_width=True):
+                            st.session_state["active_ticker"] = _rr["ticker"]
+                            st.toast(f"🎯 분석 대상을 {_rr['ticker']}로 설정했습니다! AI 분석 탭을 확인하세요.")
+                            st.rerun()
+            else:
+                st.info("RED 등급 종목이 없습니다.")
     else:
         st.info("스캔 대상을 선택하고 '🔭 스캔 시작'을 눌러주세요.")

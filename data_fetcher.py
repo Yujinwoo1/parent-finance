@@ -120,9 +120,10 @@ def _get_fear_greed():
         url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata/previous-close"
         resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
         fg = resp.json()["fear_and_greed"]
-        return f"점수: {fg['score']:.1f}/100 (상태: {fg['rating']})"
+        return float(fg['score']), f"점수: {fg['score']:.1f}/100 (상태: {fg['rating']})"
     except Exception:
-        return "데이터 수집 불가"
+        return 0.0, "데이터 수집 불가"
+
 
 
 @st.cache_data(ttl=3600)
@@ -249,8 +250,10 @@ def _fetch_ticker_data(ticker_symbol):
         max_pain          = None
 
     # --- VIX ---
+    vix_raw = 0.0
     try:
         vix_current = yf.Ticker("^VIX").history(period="1d")['Close'].iloc[-1]
+        vix_raw = float(vix_current)
         if vix_current >= 30:   vix_status = "극단적 공포 (패닉 셀링 구간)"
         elif vix_current >= 20: vix_status = "공포 (경계 구간)"
         elif vix_current <= 15: vix_status = "탐욕 (안정 및 과열 우려)"
@@ -259,7 +262,7 @@ def _fetch_ticker_data(ticker_symbol):
     except Exception:
         vix_context = "수집 불가"
 
-    fg_context = _get_fear_greed()
+    fg_raw, fg_context = _get_fear_greed()
 
     # --- 52-Week Position ---
     week52_high = float(df['Close'].tail(252).max())
@@ -387,7 +390,7 @@ def _fetch_ticker_data(ticker_symbol):
         'wma': f"주봉: 5주({latest_weekly.get('WMA5',0):.2f}), 20주({latest_weekly.get('WMA20',0):.2f}), 60주({latest_weekly.get('WMA60',0):.2f})",
         'ichi': ichi_status, 'rsi': f"{rsi_val:.1f} ({rsi_status})", 'stoch': f"K: {stoch_k:.1f}, D: {stoch_d:.1f} ({stoch_status})",
         'options': options_context, 'recent_data': recent_csv_str,
-        'vix': vix_context, 'cnn_fg': fg_context, 'chart_data': df,
+        'vix': vix_context, 'vix_raw': vix_raw, 'cnn_fg': fg_context, 'cnn_fg_raw': fg_raw, 'chart_data': df,
         'entry_score': entry_score, 'entry_grade': entry_grade,
         'stop_loss': stop_loss, 'target1': target1, 'target2': target2,
         'week52': week52, 'options_pcr_multi': options_pcr_multi, 'max_pain': max_pain,
@@ -565,25 +568,41 @@ def scan_ticker_batch(batch: tuple) -> list:
             elif c >= bb_h:         score -= 8
             elif c >= bb_h * 0.99:  score -= 4
 
-            ma50_v  = float(latest["MA50"])  if pd.notna(latest.get("MA50"))  else 0.0
-            ma200_v = float(latest["MA200"]) if pd.notna(latest.get("MA200")) else 0.0
+            ma50_v  = latest.get("MA50")
+            ma200_v = latest.get("MA200")
             ma_full_up = ma_full_dn = False
-            if   c > ma50_v > ma200_v:  score += 15; ma_full_up = True
-            elif c > ma50_v:            score += 6
-            elif c < ma50_v < ma200_v:  score -= 18; ma_full_dn = True
-            else:                        score -= 6
-
-            mc  = float(latest["MACD_line"])        if pd.notna(latest.get("MACD_line"))        else 0.0
-            sc_v = float(latest["MACD_signal_line"]) if pd.notna(latest.get("MACD_signal_line")) else 0.0
-            mp  = float(prev["MACD_line"])           if pd.notna(prev.get("MACD_line"))          else 0.0
-            sp  = float(prev["MACD_signal_line"])    if pd.notna(prev.get("MACD_signal_line"))   else 0.0
-            just_crossed = mc >= sc_v and mp < sp
-            macd_above   = mc > sc_v
-            if   just_crossed: score += 10
-            elif macd_above:   score += 5
-            else:              score -= 6
-            if ma_full_dn and just_crossed:
+            if pd.notna(ma50_v) and pd.notna(ma200_v):
+                ma50 = float(ma50_v)
+                ma200 = float(ma200_v)
+                if   c > ma50 > ma200:  score += 15; ma_full_up = True
+                elif c > ma50:          score += 6
+                elif c < ma50 < ma200:  score -= 18; ma_full_dn = True
+                else:                   score -= 6
+            elif pd.notna(ma50_v):
+                ma50 = float(ma50_v)
+                if c > ma50:            score += 6
+                else:                   score -= 6
+            else:
                 score -= 6
+
+            macd_c = latest.get("MACD_line")
+            sig_c  = latest.get("MACD_signal_line")
+            macd_p = prev.get("MACD_line")
+            sig_p  = prev.get("MACD_signal_line")
+            just_crossed = False
+            macd_above = False
+            if all(pd.notna(v) for v in [macd_c, sig_c, macd_p, sig_p]):
+                mc, sc_v, mp, sp = float(macd_c), float(sig_c), float(macd_p), float(sig_p)
+                just_crossed = mc >= sc_v and mp < sp
+                macd_above   = mc > sc_v
+                if just_crossed:   score += 10
+                elif macd_above:   score += 5
+                else:              score -= 6
+                if ma_full_dn and just_crossed:
+                    score -= 6
+            else:
+                score -= 6
+
 
             vol_avg = float(latest["VOL_AVG20"]) if pd.notna(latest.get("VOL_AVG20")) and float(latest.get("VOL_AVG20", 0)) > 0 else 1.0
             vr = float(latest["Volume"]) / vol_avg
@@ -631,6 +650,36 @@ def get_price_on_or_after(ticker: str, date_str: str, days_offset: int):
         return round(float(hist["Close"].iloc[0]), 2) if not hist.empty else None
     except Exception:
         return None
+
+
+@st.cache_data(ttl=86400)
+def get_ticker_history_cached(ticker: str):
+    """티커의 2년 주가 데이터를 한 번에 수집 및 캐싱하여 백테스트 속도 향상."""
+    try:
+        return yf.Ticker(ticker).history(period="2y")
+    except Exception:
+        return None
+
+
+def get_price_on_or_after_local(hist, date_str: str, days_offset: int):
+    """캐싱된 로컬 데이터프레임 hist에서 특정 영업일 이후 첫 거래일 종가 조회."""
+    if hist is None or hist.empty:
+        return None
+    import datetime as _dt
+    try:
+        d = _dt.datetime.strptime(date_str, "%Y-%m-%d")
+        target_date = (d + _dt.timedelta(days=days_offset)).date()
+        if target_date >= _dt.date.today():
+            return None
+        
+        # target_date 이후 거래일만 필터링
+        sub = hist[hist.index.date >= target_date]
+        if sub.empty:
+            return None
+        return round(float(sub["Close"].iloc[0]), 2)
+    except Exception:
+        return None
+
 
 
 def prepare_investment_data(ticker_symbol, portfolio_context="", trading_feedback=""):
