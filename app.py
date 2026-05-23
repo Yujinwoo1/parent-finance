@@ -521,6 +521,37 @@ with tab_main:
                 st.plotly_chart(fig, use_container_width=True)
                 st.markdown("</div>", unsafe_allow_html=True)
             with report_col:
+                # ── 상단 미니 대시보드 ──────────────────────────
+                cs_d       = investment_data.get("canslim", {})
+                cs_total_d = cs_d.get("total", 50)
+                cs_grade_d = cs_d.get("grade", "YELLOW")
+                rsi_num_d  = float(investment_data["rsi"].split("(")[0].strip())
+                cur_d      = investment_data["current_price"]
+                entry_score_d = investment_data["entry_score"]
+                entry_grade_d = investment_data["entry_grade"]
+
+                def _grade_badge(grade):
+                    return {"GREEN": "🟢", "YELLOW": "🟡", "RED": "🔴"}.get(grade, "⚪")
+
+                rsi_status_d = "과매수" if rsi_num_d >= 70 else "과매도" if rsi_num_d <= 30 else "중립"
+                rr_d = (investment_data["target1"] - cur_d) / max(cur_d - investment_data["stop_loss"], 0.01)
+
+                st.markdown(f"""
+<div style="background:rgba(0,0,0,0.04);border:1px solid rgba(128,128,128,0.2);
+            border-radius:10px;padding:10px 14px;margin-bottom:10px;font-size:13px;line-height:1.8">
+<b>{TARGET_TICKER}</b> &nbsp;${cur_d:.2f}
+<br>
+{_grade_badge(cs_grade_d)} <b>CAN SLIM</b> {cs_total_d}점 &nbsp;&nbsp;
+{_grade_badge(entry_grade_d)} <b>진입점수</b> {entry_score_d}점 &nbsp;&nbsp;
+🔵 <b>RSI</b> {rsi_num_d:.1f} ({rsi_status_d})
+<br>
+🛡️ 손절 <b>${investment_data['stop_loss']:.2f}</b> &nbsp;
+🎯 1차 <b>${investment_data['target1']:.2f}</b> &nbsp;
+🚀 2차 <b>${investment_data['target2']:.2f}</b> &nbsp;
+<span style="color:{'#2ECC71' if rr_d>=2 else '#E74C3C'}">R/R 1:{rr_d:.1f}</span>
+</div>
+""", unsafe_allow_html=True)
+
                 with st.container(border=True):
                     st.markdown(final_report)
                 with st.expander("🔍 옵션 데이터 수집 확인 (AI에 전달된 원본값)"):

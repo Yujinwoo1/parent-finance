@@ -13,6 +13,14 @@
 import datetime
 import requests
 import streamlit as st
+from zoneinfo import ZoneInfo
+
+
+def _is_market_window() -> bool:
+    """장 시작 30분 전(09:00 ET) ~ 장 마감(16:00 ET), 평일만 허용."""
+    et_now = datetime.datetime.now(ZoneInfo("America/New_York"))
+    et_min = et_now.hour * 60 + et_now.minute
+    return et_now.weekday() < 5 and 540 <= et_min < 960  # 09:00~16:00
 
 
 def _send_message(text: str) -> bool:
@@ -65,6 +73,9 @@ def check_and_notify_favorites(favorites_data: list):
         st.secrets["TELEGRAM_BOT_TOKEN"]
         st.secrets["TELEGRAM_CHAT_ID"]
     except KeyError:
+        return
+
+    if not _is_market_window():
         return
 
     for item in favorites_data:
